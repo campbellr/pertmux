@@ -113,8 +113,8 @@ fn try_fetch_detail(conn: &Connection, session_id: &str) -> anyhow::Result<Sessi
             title: row.get::<_, String>(1)?,
             directory: row.get::<_, String>(2)?,
             message_count: row.get::<_, u32>(3)?,
-            input_tokens: row.get::<_, u64>(4)?,
-            output_tokens: row.get::<_, u64>(5)?,
+            input_tokens: row.get::<_, i64>(4)? as u64,
+            output_tokens: row.get::<_, i64>(5)? as u64,
             session_created: row
                 .get::<_, Option<i64>>(6)?
                 .and_then(|ms| Timestamp::from_millisecond(ms).ok()),
@@ -158,7 +158,7 @@ fn try_fetch_detail(conn: &Connection, session_id: &str) -> anyhow::Result<Sessi
                 role: row.get::<_, String>(0)?,
                 agent: row.get::<_, Option<String>>(1)?,
                 model: row.get::<_, Option<String>>(2)?,
-                output_tokens: row.get::<_, u64>(3)?,
+                output_tokens: row.get::<_, i64>(3)? as u64,
                 timestamp,
                 text_preview: row.get::<_, Option<String>>(5)?,
             })

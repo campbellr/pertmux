@@ -825,11 +825,15 @@ async fn wait_for_initial_snapshot(
     anyhow::bail!("daemon disconnected before initial snapshot")
 }
 
-async fn run_client_loop(
-    terminal: &mut Terminal<impl Backend>,
+async fn run_client_loop<B>(
+    terminal: &mut Terminal<B>,
     state: &mut ClientState,
     framed: &mut Framed<UnixStream, LengthDelimitedCodec>,
-) -> Result<()> {
+) -> Result<()>
+where
+    B: Backend,
+    B::Error: Send + Sync + 'static,
+{
     let mut event_stream = EventStream::new();
 
     while state.running {

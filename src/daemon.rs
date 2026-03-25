@@ -162,50 +162,103 @@ pub async fn run(config: Config) -> Result<()> {
                         shutdown = true;
                     }
                     ClientMsg::Refresh => {
+                        info!("cmd: Refresh — starting full refresh");
+                        let t = std::time::Instant::now();
                         app.refresh().await;
                         app.refresh_mrs().await;
                         app.refresh_global_mrs().await;
                         app.refresh_worktrees().await;
                         drain_changes(&mut app, &client_count, &pending_for_offline).await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
+                        info!("cmd: Refresh done in {:.2?}", t.elapsed());
                     }
                     ClientMsg::CreateWorktree { project_idx, branch } => {
+                        info!("cmd: CreateWorktree project_idx={} branch={}", project_idx, branch);
+                        let t = std::time::Instant::now();
                         let result = handle_create_worktree(&app, project_idx, &branch).await;
+                        info!(
+                            "cmd: CreateWorktree wt call done in {:.2?} (ok={})",
+                            t.elapsed(),
+                            result.is_ok()
+                        );
                         send_action_result(&broadcast_tx, result);
+                        info!("cmd: CreateWorktree refreshing worktrees…");
                         app.refresh_worktrees().await;
+                        info!("cmd: CreateWorktree refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
+                        info!("cmd: CreateWorktree fully complete in {:.2?}", t.elapsed());
                     }
                     // Same as CreateWorktree — the daemon only needs to create the
                     // worktree and broadcast the updated snapshot.  The client handles
                     // opening the tmux pane with the filled-in prompt command once it
                     // receives the new snapshot containing the worktree path.
                     ClientMsg::CreateWorktreeWithPrompt { project_idx, branch, .. } => {
+                        info!(
+                            "cmd: CreateWorktreeWithPrompt project_idx={} branch={}",
+                            project_idx, branch
+                        );
+                        let t = std::time::Instant::now();
                         let result = handle_create_worktree(&app, project_idx, &branch).await;
+                        info!(
+                            "cmd: CreateWorktreeWithPrompt wt call done in {:.2?} (ok={})",
+                            t.elapsed(),
+                            result.is_ok()
+                        );
                         send_action_result(&broadcast_tx, result);
+                        info!("cmd: CreateWorktreeWithPrompt refreshing worktrees…");
                         app.refresh_worktrees().await;
+                        info!("cmd: CreateWorktreeWithPrompt refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
+                        info!("cmd: CreateWorktreeWithPrompt fully complete in {:.2?}", t.elapsed());
                     }
                     ClientMsg::RemoveWorktree { project_idx, branch } => {
+                        info!("cmd: RemoveWorktree project_idx={} branch={}", project_idx, branch);
+                        let t = std::time::Instant::now();
                         let result = handle_remove_worktree(&app, project_idx, &branch).await;
+                        info!(
+                            "cmd: RemoveWorktree wt call done in {:.2?} (ok={})",
+                            t.elapsed(),
+                            result.is_ok()
+                        );
                         send_action_result(&broadcast_tx, result);
+                        info!("cmd: RemoveWorktree refreshing worktrees…");
                         app.refresh_worktrees().await;
+                        info!("cmd: RemoveWorktree refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
+                        info!("cmd: RemoveWorktree fully complete in {:.2?}", t.elapsed());
                     }
                     ClientMsg::MergeWorktree { project_idx, worktree_path } => {
+                        info!(
+                            "cmd: MergeWorktree project_idx={} path={}",
+                            project_idx, worktree_path
+                        );
+                        let t = std::time::Instant::now();
                         let result = handle_merge_worktree(&app, project_idx, &worktree_path).await;
+                        info!(
+                            "cmd: MergeWorktree wt call done in {:.2?} (ok={})",
+                            t.elapsed(),
+                            result.is_ok()
+                        );
                         send_action_result(&broadcast_tx, result);
+                        info!("cmd: MergeWorktree refreshing worktrees…");
                         app.refresh_worktrees().await;
+                        info!("cmd: MergeWorktree refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
+                        info!("cmd: MergeWorktree fully complete in {:.2?}", t.elapsed());
                     }
                     ClientMsg::AgentAction { pane_pid, session_id, prompt } => {
+                        info!("cmd: AgentAction pane_pid={} session_id={}", pane_pid, session_id);
                         let result = app.send_agent_prompt(pane_pid, &session_id, &prompt);
+                        info!("cmd: AgentAction done (ok={})", result.is_ok());
                         send_action_result(&broadcast_tx, result);
                     }
                     ClientMsg::SelectMr { project_idx, mr_iid } => {
+                        info!("cmd: SelectMr project_idx={} mr_iid={}", project_idx, mr_iid);
+                        let t = std::time::Instant::now();
                         if let Some(proj) = app.projects.get_mut(project_idx)
                             && let Some(idx) = proj.dashboard.linked_mrs.iter().position(|l| l.mr.iid == mr_iid)
                         {
@@ -215,27 +268,40 @@ pub async fn run(config: Config) -> Result<()> {
                         app.refresh_mr_detail().await;
                         drain_changes(&mut app, &client_count, &pending_for_offline).await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
+                        info!("cmd: SelectMr done in {:.2?}", t.elapsed());
                     }
                     ClientMsg::Handshake { .. } => {}
                 }
             }
             _ = refresh_interval.tick() => {
+                info!("tick: refresh start");
+                let t = std::time::Instant::now();
                 app.refresh().await;
+                info!("tick: refresh done in {:.2?}", t.elapsed());
                 drain_changes(&mut app, &client_count, &pending_for_offline).await;
                 broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
             }
             _ = detail_interval.tick() => {
+                info!("tick: mr_detail start");
+                let t = std::time::Instant::now();
                 app.refresh_mr_detail().await;
+                info!("tick: mr_detail done in {:.2?}", t.elapsed());
                 drain_changes(&mut app, &client_count, &pending_for_offline).await;
                 broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
             }
             _ = worktree_interval.tick() => {
+                info!("tick: worktrees start");
+                let t = std::time::Instant::now();
                 app.refresh_worktrees().await;
+                info!("tick: worktrees done in {:.2?}", t.elapsed());
                 broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
             }
             _ = mr_list_interval.tick() => {
+                info!("tick: mr_list start");
+                let t = std::time::Instant::now();
                 app.refresh_mrs().await;
                 app.refresh_global_mrs().await;
+                info!("tick: mr_list done in {:.2?}", t.elapsed());
                 drain_changes(&mut app, &client_count, &pending_for_offline).await;
                 broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
             }

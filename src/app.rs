@@ -18,7 +18,7 @@ use crate::worktrunk::{self, WtWorktree};
 use jiff::Timestamp as JiffTimestamp;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 pub enum SelectionSection {
     MergeRequests,
@@ -224,6 +224,8 @@ impl App {
     }
 
     pub async fn refresh(&mut self) {
+        info!("app::refresh: start");
+        let t = std::time::Instant::now();
         self.last_refresh = Instant::now();
         self.error = None;
 
@@ -232,10 +234,12 @@ impl App {
         let mut panes = match tmux::list_agent_panes(&process_names) {
             Ok(p) => p,
             Err(e) => {
+                warn!("app::refresh: tmux error after {:.2?}: {}", t.elapsed(), e);
                 self.error = Some(format!("tmux error: {}", e));
                 return;
             }
         };
+        info!("app::refresh: tmux listed {} panes in {:.2?}", panes.len(), t.elapsed());
 
         for pane in &mut panes {
             if let Some(agent) = self.find_agent(&pane.pane_command) {
@@ -292,8 +296,18 @@ impl App {
         let mut link_error: Option<String> = None;
         if let Some(ref read_state) = self.read_state {
             for proj in &mut self.projects {
+                info!(
+                    "app::refresh: discover_worktrees for {} (path={})",
+                    proj.config.name, proj.config.local_path
+                );
+                let dt = std::time::Instant::now();
                 match discover_worktrees(&proj.config.local_path).await {
                     Ok(worktrees) => {
+                        info!(
+                            "app::refresh: discovered {} worktrees in {:.2?}",
+                            worktrees.len(),
+                            dt.elapsed()
+                        );
                         match link_all(
                             &proj.cached_mrs,
                             &worktrees,
@@ -315,6 +329,11 @@ impl App {
                         }
                     }
                     Err(e) => {
+                        warn!(
+                            "app::refresh: discover_worktrees failed after {:.2?}: {}",
+                            dt.elapsed(),
+                            e
+                        );
                         link_error = Some(format!("Worktree discovery error: {}", e));
                     }
                 }
@@ -323,6 +342,7 @@ impl App {
         if let Some(e) = link_error {
             self.error = Some(e);
         }
+        info!("app::refresh: done in {:.2?}", t.elapsed());
     }
 
     fn build_groups(&mut self, panes: &[AgentPane]) {
@@ -335,11 +355,21 @@ impl App {
     }
 
     pub async fn refresh_mrs(&mut self) {
+        info!("app::refresh_mrs: start ({} projects)", self.projects.len());
+        let t = std::time::Instant::now();
         let mut last_error: Option<String> = None;
 
         for proj in &mut self.projects {
+            info!("app::refresh_mrs: fetching MRs for {}", proj.config.name);
+            let pt = std::time::Instant::now();
             match proj.client.fetch_mrs().await {
                 Ok(mrs) => {
+                    info!(
+                        "app::refresh_mrs: got {} MRs for {} in {:.2?}",
+                        mrs.len(),
+                        proj.config.name,
+                        pt.elapsed()
+                    );
                     if !proj.cached_mrs.is_empty() {
                         let changes =
                             detect_mr_list_changes(&proj.config.name, &proj.cached_mrs, &mrs);
@@ -352,6 +382,12 @@ impl App {
                     proj.cached_mrs = mrs;
                 }
                 Err(e) => {
+                    warn!(
+                        "app::refresh_mrs: error for {} after {:.2?}: {}",
+                        proj.config.name,
+                        pt.elapsed(),
+                        e
+                    );
                     last_error = Some(format!("Forge error ({}): {}", proj.config.name, e));
                 }
             }
@@ -360,9 +396,12 @@ impl App {
         if let Some(e) = last_error {
             self.error = Some(e);
         }
+        info!("app::refresh_mrs: done in {:.2?}", t.elapsed());
     }
 
     pub async fn refresh_global_mrs(&mut self) {
+        info!("app::refresh_global_mrs: start");
+        let t = std::time::Instant::now();
         let mut all_entries: Vec<GlobalMrEntry> = Vec::new();
 
         // GitLab: aggregate per-project rather than using the global
@@ -418,6 +457,11 @@ impl App {
                 .then_with(|| b.mr.updated_at.cmp(&a.mr.updated_at))
         });
 
+        info!(
+            "app::refresh_global_mrs: done — {} entries in {:.2?}",
+            all_entries.len(),
+            t.elapsed()
+        );
         self.global_mrs = all_entries;
     }
 
@@ -431,10 +475,21 @@ impl App {
         };
 
         let iid = linked_mr.mr.iid;
+        info!(
+            "app::refresh_mr_detail: start (project={}, iid={})",
+            proj.config.name, iid
+        );
+        let t = std::time::Instant::now();
 
         let project_name = proj.config.name.clone();
+        info!("app::refresh_mr_detail: fetching detail for iid={}", iid);
+        let st = std::time::Instant::now();
         match proj.client.fetch_mr_detail(iid).await {
             Ok(detail) => {
+                info!(
+                    "app::refresh_mr_detail: got detail in {:.2?}",
+                    st.elapsed()
+                );
                 if let Some(ref old_detail) = proj.cached_mr_detail {
                     let changes = detect_mr_detail_changes(&project_name, old_detail, &detail);
                     for c in &changes {
@@ -447,31 +502,60 @@ impl App {
                 proj.last_detail_refresh = Instant::now();
             }
             Err(e) => {
+                warn!(
+                    "app::refresh_mr_detail: fetch_mr_detail error after {:.2?}: {}",
+                    st.elapsed(),
+                    e
+                );
                 self.error = Some(format!("MR detail error: {}", e));
                 return;
             }
         }
 
+        info!("app::refresh_mr_detail: fetching CI jobs");
+        let st = std::time::Instant::now();
         match proj
             .client
             .fetch_ci_jobs(proj.cached_mr_detail.as_ref().unwrap())
             .await
         {
             Ok(mut jobs) => {
+                info!(
+                    "app::refresh_mr_detail: got {} CI jobs in {:.2?}",
+                    jobs.len(),
+                    st.elapsed()
+                );
                 jobs.reverse();
                 proj.cached_pipeline_jobs = jobs;
             }
-            Err(_) => {
+            Err(e) => {
+                warn!(
+                    "app::refresh_mr_detail: fetch_ci_jobs error after {:.2?}: {}",
+                    st.elapsed(),
+                    e
+                );
                 proj.cached_pipeline_jobs = vec![];
             }
         }
 
+        info!("app::refresh_mr_detail: fetching discussions");
+        let st = std::time::Instant::now();
         match proj.client.fetch_discussions(iid).await {
             Ok(threads) => {
+                info!(
+                    "app::refresh_mr_detail: got {} discussion threads in {:.2?}",
+                    threads.len(),
+                    st.elapsed()
+                );
                 proj.cached_threads = threads;
                 proj.cached_threads_iid = Some(iid);
             }
-            Err(_) => {
+            Err(e) => {
+                warn!(
+                    "app::refresh_mr_detail: fetch_discussions error after {:.2?}: {}",
+                    st.elapsed(),
+                    e
+                );
                 // Preserve existing cached threads on fetch error
             }
         }
@@ -483,12 +567,29 @@ impl App {
             let _ = read_state.mark_notes_seen(&proj.config.project, iid, &note_ids);
             let _ = read_state.mark_mr_viewed(&proj.config.project, iid, notes.len() as u32);
         }
+        info!("app::refresh_mr_detail: done in {:.2?}", t.elapsed());
     }
 
     pub async fn refresh_worktrees(&mut self) {
+        info!(
+            "app::refresh_worktrees: start ({} projects)",
+            self.projects.len()
+        );
+        let t = std::time::Instant::now();
         for proj in &mut self.projects {
+            info!(
+                "app::refresh_worktrees: fetching for {} (path={})",
+                proj.config.name, proj.config.local_path
+            );
+            let pt = std::time::Instant::now();
             match worktrunk::fetch_worktrees(&proj.config.local_path).await {
                 Ok(wts) => {
+                    info!(
+                        "app::refresh_worktrees: got {} worktrees for {} in {:.2?}",
+                        wts.len(),
+                        proj.config.name,
+                        pt.elapsed()
+                    );
                     proj.cached_worktrees = wts;
                     if proj.worktree_selected >= proj.cached_worktrees.len()
                         && !proj.cached_worktrees.is_empty()
@@ -497,11 +598,17 @@ impl App {
                     }
                 }
                 Err(e) => {
-                    warn!("worktrunk error ({}): {}", proj.config.name, e);
+                    warn!(
+                        "app::refresh_worktrees: error for {} after {:.2?}: {}",
+                        proj.config.name,
+                        pt.elapsed(),
+                        e
+                    );
                     proj.cached_worktrees = vec![];
                 }
             }
         }
+        info!("app::refresh_worktrees: done in {:.2?}", t.elapsed());
     }
 
     pub fn seconds_since_refresh(&self) -> u64 {

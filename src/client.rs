@@ -683,6 +683,21 @@ pub async fn stop() -> Result<()> {
     let msg = ClientMsg::Stop;
     framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
 
+    // Drop the connection so the daemon's client-handler task can exit cleanly.
+    drop(framed);
+
+    // Wait up to 5 s for the daemon to remove its socket file before declaring success.
+    // Without this there is a race: the caller may try `pertmux serve` before the daemon
+    // has processed the Stop command and run its DaemonShutdown cleanup.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while sock_path.exists() {
+        if std::time::Instant::now() >= deadline {
+            eprintln!("warning: daemon did not shut down within 5 s");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
     crate::banner::print();
     println!("  {GRAY}daemon stopped{RESET}");
     println!();

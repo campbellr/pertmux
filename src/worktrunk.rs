@@ -2,6 +2,7 @@ use anyhow::Result;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
@@ -99,6 +100,9 @@ pub struct WtWorktree {
 }
 
 pub async fn fetch_worktrees(local_path: &str) -> Result<Vec<WtWorktree>> {
+    info!("fetch_worktrees: start (path={})", local_path);
+    let t = std::time::Instant::now();
+
     let output = match Command::new("wt")
         .args(["-C", local_path, "list", "--format=json"])
         .output()
@@ -106,25 +110,54 @@ pub async fn fetch_worktrees(local_path: &str) -> Result<Vec<WtWorktree>> {
     {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            info!("fetch_worktrees: wt binary not found, returning empty");
             return Ok(vec![]);
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => {
+            warn!("fetch_worktrees: command error after {:.2?}: {}", t.elapsed(), e);
+            return Err(e.into());
+        }
     };
 
+    info!(
+        "fetch_worktrees: wt exited (status={}) in {:.2?}",
+        output.status,
+        t.elapsed()
+    );
+
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "fetch_worktrees: wt list failed ({}): {}",
+            output.status,
+            stderr.trim()
+        );
         return Ok(vec![]);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.trim().is_empty() {
+        info!("fetch_worktrees: empty output, returning empty");
         return Ok(vec![]);
     }
 
     let all: Vec<WtWorktree> = serde_json::from_str(&stdout)?;
-    Ok(all.into_iter().filter(|w| w.kind == "worktree").collect())
+    let worktrees: Vec<WtWorktree> = all.into_iter().filter(|w| w.kind == "worktree").collect();
+    info!(
+        "fetch_worktrees: done — {} worktrees (elapsed={:.2?})",
+        worktrees.len(),
+        t.elapsed()
+    );
+    Ok(worktrees)
 }
 
 pub async fn create_worktree(local_path: &str, branch: &str) -> Result<String> {
+    info!(
+        "create_worktree: start (path={}, branch={})",
+        local_path, branch
+    );
+    let t = std::time::Instant::now();
+
     let output = Command::new("wt")
         .args([
             "-C",
@@ -139,15 +172,37 @@ pub async fn create_worktree(local_path: &str, branch: &str) -> Result<String> {
         .output()
         .await?;
 
+    info!(
+        "create_worktree: wt exited (status={}) in {:.2?}",
+        output.status,
+        t.elapsed()
+    );
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "create_worktree: failed (branch={}): {}",
+            branch,
+            stderr.trim()
+        );
         anyhow::bail!("{}", stderr.trim());
     }
 
+    info!(
+        "create_worktree: ok (branch={}, elapsed={:.2?})",
+        branch,
+        t.elapsed()
+    );
     Ok(format!("Created worktree: {}", branch))
 }
 
 pub async fn remove_worktree(local_path: &str, branch: &str) -> Result<String> {
+    info!(
+        "remove_worktree: start (path={}, branch={})",
+        local_path, branch
+    );
+    let t = std::time::Instant::now();
+
     let output = Command::new("wt")
         .args([
             "-C",
@@ -162,25 +217,60 @@ pub async fn remove_worktree(local_path: &str, branch: &str) -> Result<String> {
         .output()
         .await?;
 
+    info!(
+        "remove_worktree: wt exited (status={}) in {:.2?}",
+        output.status,
+        t.elapsed()
+    );
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "remove_worktree: failed (branch={}): {}",
+            branch,
+            stderr.trim()
+        );
         anyhow::bail!("{}", stderr.trim());
     }
 
+    info!(
+        "remove_worktree: ok (branch={}, elapsed={:.2?})",
+        branch,
+        t.elapsed()
+    );
     Ok(format!("Removed worktree: {}", branch))
 }
 
 pub async fn merge_worktree(worktree_path: &str) -> Result<String> {
+    info!("merge_worktree: start (path={})", worktree_path);
+    let t = std::time::Instant::now();
+
     let output = Command::new("wt")
         .args(["-C", worktree_path, "merge", "-y", "--no-verify"])
         .output()
         .await?;
 
+    info!(
+        "merge_worktree: wt exited (status={}) in {:.2?}",
+        output.status,
+        t.elapsed()
+    );
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "merge_worktree: failed (path={}): {}",
+            worktree_path,
+            stderr.trim()
+        );
         anyhow::bail!("{}", stderr.trim());
     }
 
+    info!(
+        "merge_worktree: ok (path={}, elapsed={:.2?})",
+        worktree_path,
+        t.elapsed()
+    );
     Ok("Merged and cleaned up".to_string())
 }
 

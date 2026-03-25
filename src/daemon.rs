@@ -182,8 +182,8 @@ pub async fn run(config: Config) -> Result<()> {
                             result.is_ok()
                         );
                         send_action_result(&broadcast_tx, result);
-                        info!("cmd: CreateWorktree refreshing worktrees…");
-                        app.refresh_worktrees().await;
+                        info!("cmd: CreateWorktree refreshing project {} worktrees only…", project_idx);
+                        app.refresh_worktrees_for_project(project_idx).await;
                         info!("cmd: CreateWorktree refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
@@ -206,8 +206,8 @@ pub async fn run(config: Config) -> Result<()> {
                             result.is_ok()
                         );
                         send_action_result(&broadcast_tx, result);
-                        info!("cmd: CreateWorktreeWithPrompt refreshing worktrees…");
-                        app.refresh_worktrees().await;
+                        info!("cmd: CreateWorktreeWithPrompt refreshing project {} worktrees only…", project_idx);
+                        app.refresh_worktrees_for_project(project_idx).await;
                         info!("cmd: CreateWorktreeWithPrompt refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
@@ -223,8 +223,8 @@ pub async fn run(config: Config) -> Result<()> {
                             result.is_ok()
                         );
                         send_action_result(&broadcast_tx, result);
-                        info!("cmd: RemoveWorktree refreshing worktrees…");
-                        app.refresh_worktrees().await;
+                        info!("cmd: RemoveWorktree refreshing project {} worktrees only…", project_idx);
+                        app.refresh_worktrees_for_project(project_idx).await;
                         info!("cmd: RemoveWorktree refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
@@ -243,8 +243,8 @@ pub async fn run(config: Config) -> Result<()> {
                             result.is_ok()
                         );
                         send_action_result(&broadcast_tx, result);
-                        info!("cmd: MergeWorktree refreshing worktrees…");
-                        app.refresh_worktrees().await;
+                        info!("cmd: MergeWorktree refreshing project {} worktrees only…", project_idx);
+                        app.refresh_worktrees_for_project(project_idx).await;
                         info!("cmd: MergeWorktree refreshing panes…");
                         app.refresh().await;
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;

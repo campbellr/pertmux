@@ -355,20 +355,26 @@ impl App {
     }
 
     pub async fn refresh_mrs(&mut self) {
-        info!("app::refresh_mrs: start ({} projects)", self.projects.len());
+        info!(
+            "app::refresh_mrs: start ({} projects, parallel)",
+            self.projects.len()
+        );
         let t = std::time::Instant::now();
-        let mut last_error: Option<String> = None;
 
-        for proj in &mut self.projects {
-            info!("app::refresh_mrs: fetching MRs for {}", proj.config.name);
-            let pt = std::time::Instant::now();
-            match proj.client.fetch_mrs().await {
+        // Drive all per-project MR fetches concurrently.  The futures borrow
+        // each project's client immutably; after join_all returns the futures
+        // are consumed and the borrows released, so we can mutably iterate next.
+        let fetch_futures: Vec<_> = self.projects.iter().map(|p| p.client.fetch_mrs()).collect();
+        let all_results = futures::future::join_all(fetch_futures).await;
+
+        let mut last_error: Option<String> = None;
+        for (proj, result) in self.projects.iter_mut().zip(all_results) {
+            match result {
                 Ok(mrs) => {
                     info!(
-                        "app::refresh_mrs: got {} MRs for {} in {:.2?}",
+                        "app::refresh_mrs: got {} MRs for {}",
                         mrs.len(),
-                        proj.config.name,
-                        pt.elapsed()
+                        proj.config.name
                     );
                     if !proj.cached_mrs.is_empty() {
                         let changes =
@@ -382,12 +388,7 @@ impl App {
                     proj.cached_mrs = mrs;
                 }
                 Err(e) => {
-                    warn!(
-                        "app::refresh_mrs: error for {} after {:.2?}: {}",
-                        proj.config.name,
-                        pt.elapsed(),
-                        e
-                    );
+                    warn!("app::refresh_mrs: error for {}: {}", proj.config.name, e);
                     last_error = Some(format!("Forge error ({}): {}", proj.config.name, e));
                 }
             }
@@ -570,25 +571,45 @@ impl App {
         info!("app::refresh_mr_detail: done in {:.2?}", t.elapsed());
     }
 
+    /// Refresh worktrees for all projects in parallel.
     pub async fn refresh_worktrees(&mut self) {
         info!(
-            "app::refresh_worktrees: start ({} projects)",
+            "app::refresh_worktrees: start ({} projects, parallel)",
             self.projects.len()
         );
         let t = std::time::Instant::now();
-        for proj in &mut self.projects {
-            info!(
-                "app::refresh_worktrees: fetching for {} (path={})",
-                proj.config.name, proj.config.local_path
-            );
-            let pt = std::time::Instant::now();
-            match worktrunk::fetch_worktrees(&proj.config.local_path).await {
+
+        // Collect (name, path) pairs so we can run all wt calls concurrently
+        // without holding borrows into self.projects across await points.
+        let entries: Vec<(String, String)> = self
+            .projects
+            .iter()
+            .map(|p| (p.config.name.clone(), p.config.local_path.clone()))
+            .collect();
+
+        let results = futures::future::join_all(entries.iter().map(|(name, path)| {
+            let name = name.clone();
+            let path = path.clone();
+            async move {
+                let pt = std::time::Instant::now();
+                info!(
+                    "app::refresh_worktrees: fetching for {} (path={})",
+                    name, path
+                );
+                let result = worktrunk::fetch_worktrees(&path).await;
+                (name, pt.elapsed(), result)
+            }
+        }))
+        .await;
+
+        for (proj, (_name, elapsed, result)) in self.projects.iter_mut().zip(results) {
+            match result {
                 Ok(wts) => {
                     info!(
                         "app::refresh_worktrees: got {} worktrees for {} in {:.2?}",
                         wts.len(),
                         proj.config.name,
-                        pt.elapsed()
+                        elapsed
                     );
                     proj.cached_worktrees = wts;
                     if proj.worktree_selected >= proj.cached_worktrees.len()
@@ -600,15 +621,55 @@ impl App {
                 Err(e) => {
                     warn!(
                         "app::refresh_worktrees: error for {} after {:.2?}: {}",
-                        proj.config.name,
-                        pt.elapsed(),
-                        e
+                        proj.config.name, elapsed, e
                     );
                     proj.cached_worktrees = vec![];
                 }
             }
         }
         info!("app::refresh_worktrees: done in {:.2?}", t.elapsed());
+    }
+
+    /// Refresh worktrees for a single project only. Used after worktree
+    /// create/remove/merge commands so we don't pay the cost of refreshing all projects.
+    pub async fn refresh_worktrees_for_project(&mut self, project_idx: usize) {
+        let Some(proj) = self.projects.get_mut(project_idx) else {
+            warn!(
+                "app::refresh_worktrees_for_project: invalid project_idx={}",
+                project_idx
+            );
+            return;
+        };
+        info!(
+            "app::refresh_worktrees_for_project: fetching for {} (path={})",
+            proj.config.name, proj.config.local_path
+        );
+        let t = std::time::Instant::now();
+        match worktrunk::fetch_worktrees(&proj.config.local_path).await {
+            Ok(wts) => {
+                info!(
+                    "app::refresh_worktrees_for_project: got {} worktrees for {} in {:.2?}",
+                    wts.len(),
+                    proj.config.name,
+                    t.elapsed()
+                );
+                proj.cached_worktrees = wts;
+                if proj.worktree_selected >= proj.cached_worktrees.len()
+                    && !proj.cached_worktrees.is_empty()
+                {
+                    proj.worktree_selected = proj.cached_worktrees.len() - 1;
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "app::refresh_worktrees_for_project: error for {} after {:.2?}: {}",
+                    proj.config.name,
+                    t.elapsed(),
+                    e
+                );
+                proj.cached_worktrees = vec![];
+            }
+        }
     }
 
     pub fn seconds_since_refresh(&self) -> u64 {

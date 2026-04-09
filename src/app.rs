@@ -236,14 +236,16 @@ impl App {
 
         let process_names: Vec<&str> = self.agents.iter().map(|a| a.process_name()).collect();
 
-        // Refresh the process table once per tick — shared by list_agent_panes
-        // and every agent's query_status (e.g. opencode port discovery).
+        // Refresh the process table and socket listener map once per tick —
+        // shared by list_agent_panes and every agent's query_status (e.g.
+        // opencode port discovery). This avoids redundant /proc scans.
         let mut sys = System::new();
         sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
             ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
         );
+        let listeners = crate::discovery::build_listener_map();
 
         let mut panes = match tmux::list_agent_panes(&process_names, &sys) {
             Ok(p) => p,
@@ -261,7 +263,7 @@ impl App {
 
         for pane in &mut panes {
             if let Some(agent) = self.find_agent(&pane.pane_command) {
-                pane.status = agent.query_status(pane, &sys);
+                pane.status = agent.query_status(pane, &sys, &listeners);
                 agent.enrich_pane(pane);
             }
         }

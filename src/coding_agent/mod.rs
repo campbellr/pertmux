@@ -1,6 +1,7 @@
 pub mod claude_code;
 pub mod opencode;
 
+use crate::discovery::ListenerMap;
 use crate::types::{AgentPane, PaneStatus, SessionDetail};
 use sysinfo::System;
 
@@ -21,10 +22,10 @@ pub trait CodingAgent {
 
     /// Query the live status of a coding session.
     ///
-    /// Accepts a pre-refreshed `&System` for agents that need process-tree
-    /// inspection (e.g. opencode port discovery). Agents that don't need it
-    /// can ignore the parameter.
-    fn query_status(&self, pane: &AgentPane, sys: &System) -> PaneStatus;
+    /// Accepts a pre-refreshed `&System` and `&ListenerMap` for agents that
+    /// need process-tree inspection or port discovery (e.g. opencode). Agents
+    /// that don't need them can ignore the parameters.
+    fn query_status(&self, pane: &AgentPane, sys: &System, listeners: &ListenerMap) -> PaneStatus;
 
     /// Send a prompt to the coding agent.
     ///

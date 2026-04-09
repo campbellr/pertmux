@@ -239,20 +239,42 @@ impl App {
         self.last_refresh = Instant::now();
         self.error = None;
 
-        let process_names: Vec<&str> = self.agents.iter().map(|a| a.process_name()).collect();
+        let process_names: Vec<String> = self
+            .agents
+            .iter()
+            .map(|a| a.process_name().to_string())
+            .collect();
 
-        // Refresh the process table and socket listener map once per tick —
-        // shared by list_agent_panes and every agent's query_status (e.g.
-        // opencode port discovery). This avoids redundant /proc scans.
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
-        );
-        let listeners = crate::discovery::build_listener_map();
+        // Run the expensive system-level I/O (sysinfo /proc scan, netstat
+        // socket table, tmux subprocess) on the blocking threadpool so the
+        // tokio main task stays responsive for client IPC.
+        let scan_result = {
+            let names = process_names.clone();
+            tokio::task::spawn_blocking(move || {
+                let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let mut sys = System::new();
+                sys.refresh_processes_specifics(
+                    ProcessesToUpdate::All,
+                    true,
+                    ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+                );
+                let listeners = crate::discovery::build_listener_map();
+                let panes = tmux::list_agent_panes(&name_refs, &sys);
+                (sys, listeners, panes)
+            })
+            .await
+        };
 
-        let mut panes = match tmux::list_agent_panes(&process_names, &sys) {
+        let (sys, listeners, panes_result) = match scan_result {
+            Ok(tuple) => tuple,
+            Err(e) => {
+                warn!("app::refresh: spawn_blocking panicked: {}", e);
+                self.error = Some(format!("internal error: {}", e));
+                return;
+            }
+        };
+
+        let mut panes = match panes_result {
             Ok(p) => p,
             Err(e) => {
                 warn!("app::refresh: tmux error after {:.2?}: {}", t.elapsed(), e);

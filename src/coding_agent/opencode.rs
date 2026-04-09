@@ -8,11 +8,31 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 pub struct OpenCode {
     db_path: Option<String>,
+    /// Reusable HTTP agent for status queries (short timeout).
+    status_agent: ureq::Agent,
+    /// Reusable HTTP agent for sending prompts (longer timeout).
+    send_agent: ureq::Agent,
 }
 
 impl OpenCode {
     pub fn new(db_path: Option<String>) -> Self {
-        Self { db_path }
+        let status_agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_connect(Some(TIMEOUT))
+                .timeout_recv_body(Some(TIMEOUT))
+                .build(),
+        );
+        let send_agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_connect(Some(SEND_TIMEOUT))
+                .timeout_recv_body(Some(SEND_TIMEOUT))
+                .build(),
+        );
+        Self {
+            db_path,
+            status_agent,
+            send_agent,
+        }
     }
 }
 
@@ -47,7 +67,7 @@ impl CodingAgent for OpenCode {
             return PaneStatus::Unknown;
         };
 
-        let Some(map) = get_session_status(port) else {
+        let Some(map) = get_session_status(&self.status_agent, port) else {
             return PaneStatus::Unknown;
         };
 
@@ -71,14 +91,8 @@ impl CodingAgent for OpenCode {
             "parts": [{"type": "text", "text": prompt}]
         });
 
-        let agent = ureq::Agent::new_with_config(
-            ureq::config::Config::builder()
-                .timeout_connect(Some(SEND_TIMEOUT))
-                .timeout_recv_body(Some(SEND_TIMEOUT))
-                .build(),
-        );
-
-        let response = agent
+        let response = self
+            .send_agent
             .post(&url)
             .send_json(&body)
             .map_err(|e| anyhow::anyhow!("Failed to send message: {}", e))?;
@@ -102,14 +116,8 @@ impl CodingAgent for OpenCode {
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
-fn get_session_status(port: u16) -> Option<SessionStatusMap> {
+fn get_session_status(agent: &ureq::Agent, port: u16) -> Option<SessionStatusMap> {
     let url = format!("http://127.0.0.1:{}/session/status", port);
-    let agent = ureq::Agent::new_with_config(
-        ureq::config::Config::builder()
-            .timeout_connect(Some(TIMEOUT))
-            .timeout_recv_body(Some(TIMEOUT))
-            .build(),
-    );
     let mut response = agent.get(&url).call().ok()?;
     response.body_mut().read_json::<SessionStatusMap>().ok()
 }

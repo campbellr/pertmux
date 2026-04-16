@@ -161,6 +161,26 @@ pub(crate) fn compact_status_badge(status: &PaneStatus) -> Span<'static> {
     }
 }
 
+pub(crate) fn main_state_badge(state: Option<&str>) -> Option<Span<'static>> {
+    let (label, bg) = match state? {
+        "integrated" => (" ✓ ", Color::Green),
+        "ahead" => (" ↑ ", Color::Cyan),
+        "behind" => (" ↓ ", Color::Yellow),
+        "diverged" => (" ↕ ", Color::Yellow),
+        "would_conflict" => (" ! ", Color::Red),
+        "same_commit" => (" = ", Color::Indexed(238)),
+        "empty" => (" ∅ ", Color::Indexed(238)),
+        _ => return None,
+    };
+    Some(Span::styled(
+        label,
+        Style::default()
+            .fg(Color::Black)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
 // ─── Scroll ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn compute_scroll(

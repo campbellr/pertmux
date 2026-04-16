@@ -1,7 +1,7 @@
 use crate::linking::LinkedMergeRequest;
 use crate::types::AgentPane;
 use crate::ui::ACCENT;
-use crate::ui::helpers::{compact_status_badge, merge_status_display, truncate};
+use crate::ui::helpers::{compact_status_badge, main_state_badge, merge_status_display, truncate};
 use crate::worktrunk::{self, WtWorktree};
 use ratatui::{
     Frame,
@@ -190,6 +190,10 @@ pub(crate) fn render_worktree_card(
 
     let age = worktrunk::format_age(wt.commit.timestamp);
     let mut line2_spans = vec![Span::styled(age, Style::default().fg(Color::DarkGray))];
+    if let Some(badge) = main_state_badge(wt.main_state.as_deref()) {
+        line2_spans.push(Span::raw(" "));
+        line2_spans.push(badge);
+    }
     if let Some(pane) = pane {
         line2_spans.push(Span::raw(" "));
         line2_spans.push(compact_status_badge(&pane.status));

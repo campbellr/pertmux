@@ -136,6 +136,7 @@ pub struct App {
     /// Full activity feed history, accumulated by the daemon and included in
     /// every snapshot so clients see history even after reconnecting.
     pub activity_feed: VecDeque<ActivityEntry>,
+    pub auto_switch_project: bool,
 }
 
 impl App {
@@ -226,6 +227,7 @@ impl App {
             agent_actions: config.agent_action,
             global_mrs: Vec::new(),
             activity_feed: VecDeque::new(),
+            auto_switch_project: config.auto_switch_project,
         }
     }
 
@@ -897,6 +899,7 @@ impl App {
             pending_agent_changes: Vec::new(),
             global_mrs: self.global_mrs.clone(),
             activity_feed: self.activity_feed.iter().cloned().collect(),
+            auto_switch_project: self.auto_switch_project,
         }
     }
 

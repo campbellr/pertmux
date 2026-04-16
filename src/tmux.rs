@@ -273,7 +273,7 @@ pub fn switch_to_pane(pane_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get_own_session() -> Option<String> {
+pub fn get_own_session() -> Option<String> {
     let output = Command::new("tmux")
         .args(["display-message", "-p", "#{session_name}"])
         .output()

@@ -83,9 +83,22 @@ pub struct ClientState {
 impl ClientState {
     fn from_snapshot(mut snapshot: DashboardSnapshot) -> Self {
         let n = snapshot.projects.len();
-        let active_project = load_last_project()
-            .and_then(|name| snapshot.projects.iter().position(|p| p.name == name))
-            .unwrap_or(0);
+        let active_project = if snapshot.auto_switch_project {
+            crate::tmux::get_own_session().and_then(|session| {
+                let session_lower = session.to_lowercase();
+                snapshot
+                    .projects
+                    .iter()
+                    .position(|p| p.name.to_lowercase() == session_lower)
+            })
+        } else {
+            None
+        }
+        .or_else(|| {
+            load_last_project()
+                .and_then(|name| snapshot.projects.iter().position(|p| p.name == name))
+        })
+        .unwrap_or(0);
         let popup = if !snapshot.pending_changes.is_empty() {
             let changes = std::mem::take(&mut snapshot.pending_changes);
             PopupState::ChangeSummary {

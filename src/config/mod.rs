@@ -61,6 +61,10 @@ pub struct Config {
     pub project: Option<Vec<ProjectConfig>>,
     #[serde(default = "default_agent_actions")]
     pub agent_action: Vec<AgentActionConfig>,
+    /// Automatically switch to the project matching the current tmux session name
+    /// when the client connects. Case-insensitive match.
+    #[serde(default)]
+    pub auto_switch_project: bool,
 }
 
 impl Default for Config {
@@ -78,6 +82,7 @@ impl Default for Config {
             github: None,
             project: None,
             agent_action: default_agent_actions(),
+            auto_switch_project: false,
         }
     }
 }

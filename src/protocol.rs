@@ -180,6 +180,10 @@ pub struct DashboardSnapshot {
     /// see all events that happened since the daemon started.
     #[serde(default)]
     pub activity_feed: Vec<ActivityEntry>,
+    /// When true, the client auto-selects the project whose name matches the
+    /// current tmux session name on connect.
+    #[serde(default)]
+    pub auto_switch_project: bool,
 }
 
 impl PartialEq for DashboardSnapshot {
@@ -367,6 +371,7 @@ mod tests {
             pending_agent_changes: vec![],
             global_mrs: vec![],
             activity_feed: vec![],
+            auto_switch_project: false,
         };
 
         let json = serde_json::to_string(&snapshot).expect("serialize snapshot");

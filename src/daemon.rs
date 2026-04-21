@@ -111,16 +111,11 @@ pub async fn run(config: Config) -> Result<()> {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientMsg>(64);
 
     let mut app = App::new(config);
-    if app.has_projects() {
-        app.refresh_mrs(None).await;
-        app.refresh_global_mrs(None).await;
-    }
-    app.refresh().await;
-    app.refresh_worktrees(None).await;
-    app.pending_changes.clear();
 
+    // Publish an empty snapshot so newly-connecting clients get a response
+    // immediately; the main select! loop's first interval ticks (t=0) do
+    // the initial fetches in the background.
     let latest_snapshot = Arc::new(Mutex::new(app.snapshot()));
-    let _ = broadcast_tx.send(DaemonMsg::Snapshot(Box::new(app.snapshot())));
 
     let client_count = Arc::new(AtomicUsize::new(0));
     let pending_for_offline: Arc<Mutex<Vec<MrChange>>> = Arc::new(Mutex::new(Vec::new()));

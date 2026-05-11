@@ -11,6 +11,8 @@ mod forge_clients;
 mod git;
 mod linking;
 mod mr_changes;
+mod project_sort;
+mod project_stats;
 mod protocol;
 #[allow(unused)]
 mod read_state;

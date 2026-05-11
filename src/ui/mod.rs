@@ -15,6 +15,10 @@ mod components;
 mod helpers;
 
 pub(crate) const ACCENT: Color = Color::Rgb(255, 140, 0);
+/// Dim foreground for zero-valued counts and inactive labels (xterm-256 grey).
+pub(crate) const DIM: Color = Color::Indexed(242);
+/// Background highlight for the focused row in the Projects overview table.
+pub(crate) const CURSOR_BG: Color = Color::Indexed(237);
 pub(crate) const NOTIFICATION_DURATION: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(crate) struct ProjectRenderData<'a> {

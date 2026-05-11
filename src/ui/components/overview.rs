@@ -1,6 +1,7 @@
-use crate::client::{ClientState, ProjectSort};
-use crate::types::PaneStatus;
-use crate::ui::ACCENT;
+use crate::client::ClientState;
+use crate::project_sort::{ORDER, ProjectSort};
+use crate::project_stats::{ProjectStats, build_sorted_project_stats};
+use crate::ui::{ACCENT, CURSOR_BG, DIM};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -9,19 +10,9 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Cell, Row, Table},
 };
 
-struct ProjectStats {
-    canonical_idx: usize,
-    name: String,
-    mrs: usize,
-    busy: usize,
-    idle: usize,
-}
-
-impl ProjectStats {
-    fn oc(&self) -> usize {
-        self.busy + self.idle
-    }
-}
+/// Rows of fixed chrome above/below the scrollable body:
+/// top border (1) + bottom border (1) + header row (1) = 3.
+const CHROME_ROWS: u16 = 3;
 
 pub(crate) fn draw_overview_panel(frame: &mut Frame, state: &ClientState, area: Rect) {
     let sort_col = state.project_sort_col;
@@ -32,9 +23,8 @@ pub(crate) fn draw_overview_panel(frame: &mut Frame, state: &ClientState, area: 
     let arrow = if sort_desc { "↓" } else { "↑" };
     let title = format!(" Projects [{} {}] ", arrow, sort_col.label());
 
-    // Persist viewport height for the key handler to clamp scrolling.
-    // 2 = top + bottom border, 1 = header row.
-    let visible_rows = area.height.saturating_sub(3);
+    // Publish viewport height so the key handler can clamp scrolling.
+    let visible_rows = area.height.saturating_sub(CHROME_ROWS);
     state.overview_height.set(visible_rows);
 
     let border_style = if focused {
@@ -54,83 +44,17 @@ pub(crate) fn draw_overview_panel(frame: &mut Frame, state: &ClientState, area: 
         .border_type(BorderType::Rounded)
         .border_style(border_style);
 
-    let header_cell = |label: &'static str, col: ProjectSort| {
-        let is_sort = col == sort_col;
-        let is_cursor = focused && col == cursor_col;
-        let mut style = if is_sort {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        if is_cursor {
-            style = style.add_modifier(Modifier::UNDERLINED);
-        }
-        Cell::from(Span::styled(label.to_string(), style))
-    };
-
-    let header = Row::new([
-        header_cell("  Name", ProjectSort::Name),
-        header_cell("MRs", ProjectSort::Mrs),
-        header_cell("OC", ProjectSort::Oc),
-        header_cell("Busy", ProjectSort::Busy),
-        header_cell("Idle", ProjectSort::Idle),
-    ])
+    let header = Row::new(
+        ORDER
+            .iter()
+            .map(|col| header_cell(*col, sort_col, cursor_col, focused))
+            .collect::<Vec<_>>(),
+    )
     .bottom_margin(0);
 
-    // Build stats once.
-    let mut stats: Vec<ProjectStats> = state
-        .snapshot
-        .projects
-        .iter()
-        .enumerate()
-        .map(|(i, proj)| {
-            let project_paths: Vec<&str> = std::iter::once(proj.local_path.as_str())
-                .chain(
-                    proj.cached_worktrees
-                        .iter()
-                        .filter_map(|wt| wt.path.as_deref()),
-                )
-                .collect();
-            let pane_belongs = |pane: &crate::types::AgentPane| {
-                let p = pane.pane_path.trim_end_matches('/');
-                project_paths.iter().any(|pp| p == pp.trim_end_matches('/'))
-            };
-            let busy = state
-                .snapshot
-                .panes
-                .iter()
-                .filter(|p| matches!(p.status, PaneStatus::Busy) && pane_belongs(p))
-                .count();
-            let idle = state
-                .snapshot
-                .panes
-                .iter()
-                .filter(|p| matches!(p.status, PaneStatus::Idle) && pane_belongs(p))
-                .count();
-            ProjectStats {
-                canonical_idx: i,
-                name: proj.name.clone(),
-                mrs: proj.dashboard.linked_mrs.len(),
-                busy,
-                idle,
-            }
-        })
-        .collect();
+    // Build + sort once, shared with the client.
+    let stats = build_sorted_project_stats(&state.snapshot, sort_col, sort_desc);
 
-    // Sort respecting persisted direction; ties broken by name asc.
-    stats.sort_by(|a, b| {
-        let cmp = match sort_col {
-            ProjectSort::Name => a.name.cmp(&b.name),
-            ProjectSort::Mrs => a.mrs.cmp(&b.mrs),
-            ProjectSort::Oc => a.oc().cmp(&b.oc()),
-            ProjectSort::Busy => a.busy.cmp(&b.busy),
-            ProjectSort::Idle => a.idle.cmp(&b.idle),
-        };
-        let cmp = if sort_desc { cmp.reverse() } else { cmp };
-        cmp.then_with(|| a.name.cmp(&b.name))
-    });
-
-    // Slice to viewport.
     let total = stats.len();
     let scroll = state.project_scroll.min(total);
     let end = (scroll + visible_rows as usize).min(total);
@@ -142,57 +66,16 @@ pub(crate) fn draw_overview_panel(frame: &mut Frame, state: &ClientState, area: 
             let display_idx = scroll + offset;
             let is_active = s.canonical_idx == state.active_project;
             let is_cursor_row = focused && display_idx == state.project_cursor_row;
-            let oc = s.oc();
-
-            let marker = if is_active { "\u{25b8} " } else { "  " };
-            let name_style = if is_active {
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            let dim = Style::default().fg(Color::Indexed(242));
-            let mr_style = if s.mrs > 0 {
-                Style::default().fg(ACCENT)
-            } else {
-                dim
-            };
-            let oc_style = if oc > 0 {
-                Style::default().fg(ACCENT)
-            } else {
-                dim
-            };
-            let busy_style = if s.busy > 0 {
-                Style::default().fg(ACCENT)
-            } else {
-                dim
-            };
-            let idle_style = if s.idle > 0 {
-                Style::default().fg(Color::Green)
-            } else {
-                dim
-            };
-
-            let row = Row::new([
-                Cell::from(Span::styled(format!("{}{}", marker, s.name), name_style)),
-                Cell::from(Span::styled(s.mrs.to_string(), mr_style)),
-                Cell::from(Span::styled(oc.to_string(), oc_style)),
-                Cell::from(Span::styled(s.busy.to_string(), busy_style)),
-                Cell::from(Span::styled(s.idle.to_string(), idle_style)),
-            ]);
-            if is_cursor_row {
-                row.style(Style::default().bg(Color::Indexed(237)))
-            } else {
-                row
-            }
+            data_row(s, is_active, is_cursor_row)
         })
         .collect();
 
     let widths = [
-        Constraint::Min(10),
-        Constraint::Length(4),
-        Constraint::Length(3),
-        Constraint::Length(4),
-        Constraint::Length(4),
+        Constraint::Min(10),   // Name
+        Constraint::Length(4), // MRs
+        Constraint::Length(3), // OC
+        Constraint::Length(4), // Busy
+        Constraint::Length(4), // Idle
     ];
 
     let table = Table::new(rows, widths)
@@ -201,4 +84,71 @@ pub(crate) fn draw_overview_panel(frame: &mut Frame, state: &ClientState, area: 
         .column_spacing(1);
 
     frame.render_widget(table, area);
+}
+
+fn header_label(col: ProjectSort) -> &'static str {
+    match col {
+        ProjectSort::Name => "  Name",
+        ProjectSort::Mrs => "MRs",
+        ProjectSort::Oc => "OC",
+        ProjectSort::Busy => "Busy",
+        ProjectSort::Idle => "Idle",
+    }
+}
+
+fn header_cell(
+    col: ProjectSort,
+    sort_col: ProjectSort,
+    cursor_col: ProjectSort,
+    focused: bool,
+) -> Cell<'static> {
+    let is_sort = col == sort_col;
+    let is_cursor = focused && col == cursor_col;
+    let mut style = if is_sort {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    if is_cursor {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    Cell::from(Span::styled(header_label(col).to_string(), style))
+}
+
+/// Style a count cell: `on` colour when non-zero, dim otherwise.
+fn count_style(n: usize, on: Color) -> Style {
+    if n > 0 {
+        Style::default().fg(on)
+    } else {
+        Style::default().fg(DIM)
+    }
+}
+
+fn data_row(s: &ProjectStats, is_active: bool, is_cursor_row: bool) -> Row<'static> {
+    let marker = if is_active { "\u{25b8} " } else { "  " };
+    let name_style = if is_active {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let oc = s.oc();
+
+    let row = Row::new([
+        Cell::from(Span::styled(format!("{}{}", marker, s.name), name_style)),
+        Cell::from(Span::styled(s.mrs.to_string(), count_style(s.mrs, ACCENT))),
+        Cell::from(Span::styled(oc.to_string(), count_style(oc, ACCENT))),
+        Cell::from(Span::styled(
+            s.busy.to_string(),
+            count_style(s.busy, ACCENT),
+        )),
+        Cell::from(Span::styled(
+            s.idle.to_string(),
+            count_style(s.idle, Color::Green),
+        )),
+    ]);
+    if is_cursor_row {
+        row.style(Style::default().bg(CURSOR_BG))
+    } else {
+        row
+    }
 }

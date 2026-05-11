@@ -710,10 +710,8 @@ impl App {
                     name, path
                 );
                 let pt = std::time::Instant::now();
-                let (wt_result, git_result) = tokio::join!(
-                    worktrunk::fetch_worktrees(&path),
-                    discover_worktrees(&path),
-                );
+                let (wt_result, git_result) =
+                    tokio::join!(worktrunk::fetch_worktrees(&path), discover_worktrees(&path),);
                 (i, name, pt.elapsed(), wt_result, git_result)
             });
         }

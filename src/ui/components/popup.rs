@@ -354,21 +354,27 @@ fn draw_worktree_search_popup(
 
     let pane_by_path = super::mr_sections::build_pane_by_path(&state.snapshot.panes);
 
-    let width = inner.width as usize;
-    let mut result_lines: Vec<Line> = Vec::new();
-    for (i, (pi, wi)) in filtered.iter().enumerate().skip(start).take(visible) {
+    // Pass 1: collect row data for all filtered entries so column widths are
+    // stable across rows (and while scrolling).
+    struct Row<'a> {
+        is_sel: bool,
+        branch: &'a str,
+        badge_spans: Vec<Span<'static>>,
+        badge_w: usize,
+        project: &'a str,
+        age: String,
+    }
+    let mut rows: Vec<Row> = Vec::with_capacity(filtered.len());
+    for (i, (pi, wi)) in filtered.iter().enumerate() {
         let Some(proj) = state.snapshot.projects.get(*pi) else {
             continue;
         };
         let Some(wt) = proj.cached_worktrees.get(*wi) else {
             continue;
         };
-        let branch = wt.branch.as_deref().unwrap_or("(detached)");
-        let age = worktrunk::format_age(wt.commit.timestamp);
-        let is_sel = i == selected;
 
         // Status badges: agent pane badge, main-state badge.
-        let mut glyph_spans: Vec<Span> = Vec::new();
+        let mut badge_spans: Vec<Span> = Vec::new();
         let pane = wt
             .path
             .as_deref()
@@ -377,29 +383,53 @@ fn draw_worktree_search_popup(
         if let Some(pane) = pane
             && !matches!(pane.status, crate::types::PaneStatus::Unknown)
         {
-            glyph_spans.push(crate::ui::helpers::compact_status_badge(&pane.status));
-            glyph_spans.push(Span::raw(" "));
+            badge_spans.push(crate::ui::helpers::compact_status_badge(&pane.status));
         }
         if let Some(badge) = crate::ui::helpers::main_state_badge(wt.main_state.as_deref()) {
-            glyph_spans.push(badge);
-            glyph_spans.push(Span::raw(" "));
+            if !badge_spans.is_empty() {
+                badge_spans.push(Span::raw(" "));
+            }
+            badge_spans.push(badge);
         }
-        let glyphs_w: usize = glyph_spans.iter().map(|s| s.content.chars().count()).sum();
+        let badge_w: usize = badge_spans.iter().map(|s| s.content.chars().count()).sum();
 
-        let prefix = if is_sel { " \u{25b8} " } else { "   " };
+        rows.push(Row {
+            is_sel: i == selected,
+            branch: wt.branch.as_deref().unwrap_or("(detached)"),
+            badge_spans,
+            badge_w,
+            project: &proj.name,
+            age: worktrunk::format_age(wt.commit.timestamp),
+        });
+    }
+
+    let badge_col = rows.iter().map(|r| r.badge_w).max().unwrap_or(0);
+    let proj_col = rows
+        .iter()
+        .map(|r| r.project.chars().count())
+        .max()
+        .unwrap_or(0);
+    let age_col = rows
+        .iter()
+        .map(|r| r.age.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    // Pass 2: render visible rows with fixed columns:
+    //  ▸ branch (left)      [badges] [project] [age]  (right-aligned columns)
+    let width = inner.width as usize;
+    let prefix_w = 3;
+    let branch_col = width
+        .saturating_sub(prefix_w + badge_col + 1 + proj_col + 1 + age_col + 1)
+        .max(8);
+    let mut result_lines: Vec<Line> = Vec::new();
+    for row in rows.iter().skip(start).take(visible) {
         // Display width, not prefix.len(): the selected arrow is 3 bytes but 1 column.
-        let prefix_w = 3;
-        let right = format!("{} {} ", proj.name, age);
-        let right_w = right.chars().count();
-        let branch_max = width
-            .saturating_sub(prefix_w + glyphs_w + right_w + 1)
-            .max(8);
-        let branch_txt = crate::ui::helpers::truncate(branch, branch_max);
-        let pad = width
-            .saturating_sub(prefix_w + branch_txt.chars().count() + glyphs_w + right_w)
-            .max(1);
+        let prefix = if row.is_sel { " \u{25b8} " } else { "   " };
+        let branch_txt = crate::ui::helpers::truncate(row.branch, branch_col);
+        let branch_pad = branch_col.saturating_sub(branch_txt.chars().count());
 
-        let branch_style = if is_sel {
+        let branch_style = if row.is_sel {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
@@ -407,13 +437,21 @@ fn draw_worktree_search_popup(
         let mut spans = vec![
             Span::styled(prefix, Style::default().fg(ACCENT)),
             Span::styled(branch_txt, branch_style),
+            Span::raw(" ".repeat(branch_pad + badge_col.saturating_sub(row.badge_w))),
         ];
-        spans.push(Span::raw(" ".repeat(pad)));
-        spans.extend(glyph_spans);
+        spans.extend(row.badge_spans.iter().cloned());
         spans.extend([
-            Span::styled(proj.name.clone(), Style::default().fg(Color::Indexed(245))),
             Span::raw(" "),
-            Span::styled(age, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                row.project.to_string(),
+                Style::default().fg(Color::Indexed(245)),
+            ),
+            Span::raw(" ".repeat(
+                proj_col.saturating_sub(row.project.chars().count())
+                    + 1
+                    + age_col.saturating_sub(row.age.chars().count()),
+            )),
+            Span::styled(row.age.clone(), Style::default().fg(Color::DarkGray)),
             Span::raw(" "),
         ]);
         result_lines.push(Line::from(spans));

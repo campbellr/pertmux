@@ -352,6 +352,8 @@ fn draw_worktree_search_popup(
         0
     };
 
+    let pane_by_path = super::mr_sections::build_pane_by_path(&state.snapshot.panes);
+
     let width = inner.width as usize;
     let mut result_lines: Vec<Line> = Vec::new();
     for (i, (pi, wi)) in filtered.iter().enumerate().skip(start).take(visible) {
@@ -365,15 +367,36 @@ fn draw_worktree_search_popup(
         let age = worktrunk::format_age(wt.commit.timestamp);
         let is_sel = i == selected;
 
+        // Status badges: agent pane badge, main-state badge.
+        let mut glyph_spans: Vec<Span> = Vec::new();
+        let pane = wt
+            .path
+            .as_deref()
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .and_then(|p| pane_by_path.get(&p));
+        if let Some(pane) = pane
+            && !matches!(pane.status, crate::types::PaneStatus::Unknown)
+        {
+            glyph_spans.push(crate::ui::helpers::compact_status_badge(&pane.status));
+            glyph_spans.push(Span::raw(" "));
+        }
+        if let Some(badge) = crate::ui::helpers::main_state_badge(wt.main_state.as_deref()) {
+            glyph_spans.push(badge);
+            glyph_spans.push(Span::raw(" "));
+        }
+        let glyphs_w: usize = glyph_spans.iter().map(|s| s.content.chars().count()).sum();
+
         let prefix = if is_sel { " \u{25b8} " } else { "   " };
         // Display width, not prefix.len(): the selected arrow is 3 bytes but 1 column.
         let prefix_w = 3;
         let right = format!("{} {} ", proj.name, age);
         let right_w = right.chars().count();
-        let branch_max = width.saturating_sub(prefix_w + right_w + 1).max(8);
+        let branch_max = width
+            .saturating_sub(prefix_w + glyphs_w + right_w + 1)
+            .max(8);
         let branch_txt = crate::ui::helpers::truncate(branch, branch_max);
         let pad = width
-            .saturating_sub(prefix_w + branch_txt.chars().count() + right_w)
+            .saturating_sub(prefix_w + branch_txt.chars().count() + glyphs_w + right_w)
             .max(1);
 
         let branch_style = if is_sel {
@@ -381,15 +404,19 @@ fn draw_worktree_search_popup(
         } else {
             Style::default().fg(Color::White)
         };
-        result_lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(prefix, Style::default().fg(ACCENT)),
             Span::styled(branch_txt, branch_style),
-            Span::raw(" ".repeat(pad)),
+        ];
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.extend(glyph_spans);
+        spans.extend([
             Span::styled(proj.name.clone(), Style::default().fg(Color::Indexed(245))),
             Span::raw(" "),
             Span::styled(age, Style::default().fg(Color::DarkGray)),
             Span::raw(" "),
-        ]));
+        ]);
+        result_lines.push(Line::from(spans));
     }
 
     if result_lines.is_empty() {

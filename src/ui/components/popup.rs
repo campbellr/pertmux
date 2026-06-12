@@ -366,11 +366,14 @@ fn draw_worktree_search_popup(
         let is_sel = i == selected;
 
         let prefix = if is_sel { " \u{25b8} " } else { "   " };
+        // Display width, not prefix.len(): the selected arrow is 3 bytes but 1 column.
+        let prefix_w = 3;
         let right = format!("{} {} ", proj.name, age);
-        let branch_max = width.saturating_sub(prefix.len() + right.len() + 1).max(8);
+        let right_w = right.chars().count();
+        let branch_max = width.saturating_sub(prefix_w + right_w + 1).max(8);
         let branch_txt = crate::ui::helpers::truncate(branch, branch_max);
         let pad = width
-            .saturating_sub(prefix.len() + branch_txt.chars().count() + right.len())
+            .saturating_sub(prefix_w + branch_txt.chars().count() + right_w)
             .max(1);
 
         let branch_style = if is_sel {

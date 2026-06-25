@@ -111,6 +111,7 @@ mod tests {
             updated_at: Timestamp::from_second(1_767_225_600).unwrap(),
             detailed_merge_status: None,
             has_conflicts: None,
+            approved: None,
         }
     }
 

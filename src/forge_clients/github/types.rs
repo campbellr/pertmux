@@ -62,6 +62,48 @@ pub struct GhCheckRunsResponse {
     pub check_runs: Vec<GhCheckRun>,
 }
 
+// --- GraphQL: PR reviewDecision (handles multi-approval requirements) ---
+
+#[derive(Debug, Deserialize)]
+pub struct GhGraphqlReviewResponse {
+    #[serde(default)]
+    pub data: Option<GhGraphqlData>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhGraphqlData {
+    #[serde(default)]
+    pub repository: Option<GhGraphqlRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhGraphqlRepository {
+    #[serde(rename = "pullRequests")]
+    pub pull_requests: GhGraphqlPrConnection,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhGraphqlPrConnection {
+    #[serde(rename = "pageInfo")]
+    pub page_info: GhGraphqlPageInfo,
+    pub nodes: Vec<GhGraphqlPrNode>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhGraphqlPageInfo {
+    #[serde(rename = "hasNextPage")]
+    pub has_next_page: bool,
+    #[serde(rename = "endCursor", default)]
+    pub end_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhGraphqlPrNode {
+    pub number: u64,
+    #[serde(rename = "reviewDecision", default)]
+    pub review_decision: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GhIssueComment {
     pub id: u64,

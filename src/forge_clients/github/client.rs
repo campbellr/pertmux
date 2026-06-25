@@ -65,7 +65,79 @@ impl GitHubClient {
             has_conflicts: pr
                 .mergeable
                 .map(|m| !m && pr.mergeable_state.as_deref() == Some("dirty")),
+            approved: None,
         }
+    }
+
+    fn graphql_url(&self) -> String {
+        // base_url is "https://api.github.com" (public) or
+        // "https://{host}/api/v3" (GHE). GraphQL lives at /graphql and
+        // /api/graphql respectively.
+        match self.base_url.strip_suffix("/api/v3") {
+            Some(host) => format!("{}/api/graphql", host),
+            None => format!("{}/graphql", self.base_url),
+        }
+    }
+
+    /// Fetch `reviewDecision` for all open PRs in one GraphQL query, returning a
+    /// map of PR number -> approval bool. `reviewDecision` is computed by GitHub
+    /// against branch-protection / ruleset required approval counts, so it is
+    /// correct for repos requiring multiple approvals. Returns an empty map on
+    /// error so missing PRs degrade to `None` (unknown) rather than a false event.
+    async fn fetch_review_decisions(&self) -> std::collections::HashMap<u64, Option<bool>> {
+        let query = r#"
+            query($owner: String!, $repo: String!, $cursor: String) {
+              repository(owner: $owner, name: $repo) {
+                pullRequests(states: OPEN, first: 100, after: $cursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes { number reviewDecision }
+                }
+              }
+            }"#;
+
+        let mut out = std::collections::HashMap::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let body = serde_json::json!({
+                "query": query,
+                "variables": { "owner": self.owner, "repo": self.repo, "cursor": cursor },
+            });
+            let resp = match self
+                .client
+                .post(self.graphql_url())
+                .header("Authorization", format!("Bearer {}", self.token))
+                .json(&body)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+            {
+                Ok(r) => r,
+                Err(_) => return out,
+            };
+            let parsed: GhGraphqlReviewResponse = match resp.json().await {
+                Ok(p) => p,
+                Err(_) => return out,
+            };
+            let Some(prs) = parsed
+                .data
+                .and_then(|d| d.repository)
+                .map(|r| r.pull_requests)
+            else {
+                return out;
+            };
+            for node in &prs.nodes {
+                out.insert(
+                    node.number,
+                    review_decision_to_approved(node.review_decision.as_deref()),
+                );
+            }
+            if prs.page_info.has_next_page && prs.page_info.end_cursor.is_some() {
+                cursor = prs.page_info.end_cursor;
+            } else {
+                break;
+            }
+        }
+        out
     }
 
     fn gh_pr_to_detail(&self, pr: &GhPullRequest) -> MergeRequestDetail {
@@ -98,6 +170,22 @@ impl GitHubClient {
             head_pipeline: None,
             head_sha: Some(pr.head.sha.clone()),
         }
+    }
+}
+
+/// Map GitHub's GraphQL `reviewDecision` to an approval bool.
+///
+/// `reviewDecision` already accounts for branch-protection / ruleset required
+/// approving review counts (multi-approval repos), computed server-side.
+///   - APPROVED          -> Some(true)   (required approvals met)
+///   - CHANGES_REQUESTED  -> Some(false)
+///   - REVIEW_REQUIRED    -> Some(false)  (not enough approvals yet)
+///   - null               -> None         (no review required: no approval gate)
+fn review_decision_to_approved(decision: Option<&str>) -> Option<bool> {
+    match decision {
+        Some("APPROVED") => Some(true),
+        Some("CHANGES_REQUESTED") | Some("REVIEW_REQUIRED") => Some(false),
+        _ => None,
     }
 }
 
@@ -163,6 +251,13 @@ impl ForgeClient for GitHubClient {
 
         if let Some(ref username) = self.username {
             summaries.retain(|mr| mr.author.username == *username);
+        }
+
+        // mergeable_state isn't a reliable approval flag. Use GraphQL
+        // reviewDecision, which accounts for required-approval counts.
+        let decisions = self.fetch_review_decisions().await;
+        for mr in summaries.iter_mut() {
+            mr.approved = decisions.get(&mr.iid).copied().flatten();
         }
 
         Ok(summaries)
@@ -394,6 +489,50 @@ mod tests {
     }
 
     #[test]
+    fn review_decision_maps_to_approved() {
+        // APPROVED only once GitHub says the required-approval bar is met,
+        // so this is correct for multi-approval repos.
+        assert_eq!(review_decision_to_approved(Some("APPROVED")), Some(true));
+        assert_eq!(
+            review_decision_to_approved(Some("CHANGES_REQUESTED")),
+            Some(false)
+        );
+        // Not enough approvals yet (e.g. 1 of 2 required).
+        assert_eq!(
+            review_decision_to_approved(Some("REVIEW_REQUIRED")),
+            Some(false)
+        );
+        // No review required: no approval gate -> unknown, suppress events.
+        assert_eq!(review_decision_to_approved(None), None);
+        assert_eq!(review_decision_to_approved(Some("WHATEVER")), None);
+    }
+
+    #[test]
+    fn graphql_review_response_parses() {
+        let json = r#"{
+            "data": { "repository": { "pullRequests": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": [
+                    { "number": 1, "reviewDecision": "APPROVED" },
+                    { "number": 2, "reviewDecision": "REVIEW_REQUIRED" },
+                    { "number": 3, "reviewDecision": null }
+                ]
+            } } }
+        }"#;
+        let parsed: GhGraphqlReviewResponse = serde_json::from_str(json).unwrap();
+        let nodes = parsed.data.unwrap().repository.unwrap().pull_requests.nodes;
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(
+            review_decision_to_approved(nodes[0].review_decision.as_deref()),
+            Some(true)
+        );
+        assert_eq!(
+            review_decision_to_approved(nodes[2].review_decision.as_deref()),
+            None
+        );
+    }
+
+    #[test]
     fn test_map_mergeable_state() {
         assert_eq!(map_mergeable_state("clean"), "mergeable");
         assert_eq!(map_mergeable_state("dirty"), "conflicts");
@@ -449,5 +588,14 @@ mod tests {
         assert_eq!(client.owner, "team");
         assert_eq!(client.repo, "app");
         assert_eq!(client.username, Some("alice".to_string()));
+    }
+
+    #[test]
+    fn graphql_url_public_and_enterprise() {
+        let public = GitHubClient::new("t".into(), "github.com", "o/r", None);
+        assert_eq!(public.graphql_url(), "https://api.github.com/graphql");
+
+        let ghe = GitHubClient::new("t".into(), "github.corp.com", "o/r", None);
+        assert_eq!(ghe.graphql_url(), "https://github.corp.com/api/graphql");
     }
 }

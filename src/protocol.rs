@@ -289,6 +289,7 @@ mod tests {
             updated_at: "2026-03-01T00:00:00.000Z".parse().unwrap(),
             detailed_merge_status: Some("mergeable".to_string()),
             has_conflicts: Some(false),
+            approved: Some(false),
         };
 
         let linked_mr = LinkedMergeRequest {

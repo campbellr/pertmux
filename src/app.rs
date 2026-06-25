@@ -972,15 +972,9 @@ fn detect_mr_list_changes(
             });
         }
 
-        let was_approved = old_mr
-            .detailed_merge_status
-            .as_deref()
-            .is_some_and(|s| s.contains("approved"));
-        let is_approved = new_mr
-            .detailed_merge_status
-            .as_deref()
-            .is_some_and(|s| s.contains("approved"));
-        if is_approved && !was_approved {
+        // Only emit on a real false -> true approval transition. `None` (unknown)
+        // on either side suppresses the notification.
+        if new_mr.approved == Some(true) && old_mr.approved == Some(false) {
             changes.push(MrChange {
                 project_name: project_name.to_string(),
                 mr_iid: new_mr.iid,
@@ -1050,5 +1044,81 @@ fn agent_change_type(from: &PaneStatus, to: &PaneStatus) -> Option<AgentChangeTy
         }
         (_, PaneStatus::Retry { .. }) => Some(AgentChangeType::Retry),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::forge_clients::types::ForgeUser;
+
+    fn mr(
+        iid: u64,
+        detailed_merge_status: Option<&str>,
+        approved: Option<bool>,
+    ) -> MergeRequestSummary {
+        MergeRequestSummary {
+            iid,
+            title: "Test MR".to_string(),
+            state: "opened".to_string(),
+            source_branch: "feat/x".to_string(),
+            target_branch: "main".to_string(),
+            author: ForgeUser {
+                id: 1,
+                username: "dev".to_string(),
+                name: "Dev".to_string(),
+            },
+            draft: false,
+            user_notes_count: 0,
+            web_url: "https://gl.example.com/a/b/-/merge_requests/1".to_string(),
+            created_at: JiffTimestamp::from_second(1_767_225_600).unwrap(),
+            updated_at: JiffTimestamp::from_second(1_767_225_600).unwrap(),
+            detailed_merge_status: detailed_merge_status.map(str::to_string),
+            has_conflicts: None,
+            approved,
+        }
+    }
+
+    fn approved_changes(old: &[MergeRequestSummary], new: &[MergeRequestSummary]) -> usize {
+        detect_mr_list_changes("proj", old, new)
+            .iter()
+            .filter(|c| matches!(c.change_type, MrChangeType::Approved))
+            .count()
+    }
+
+    // Regression: resolving a discussion surfaces the `not_approved` blocker.
+    // Old code matched the "approved" substring and fired a false notification.
+    #[test]
+    fn resolving_discussion_does_not_emit_approved() {
+        let old = vec![mr(1, Some("discussions_not_resolved"), Some(false))];
+        let new = vec![mr(1, Some("not_approved"), Some(false))];
+        assert_eq!(approved_changes(&old, &new), 0);
+    }
+
+    #[test]
+    fn real_approval_transition_emits_once() {
+        let old = vec![mr(1, Some("not_approved"), Some(false))];
+        let new = vec![mr(1, Some("mergeable"), Some(true))];
+        assert_eq!(approved_changes(&old, &new), 1);
+    }
+
+    #[test]
+    fn unknown_approval_state_suppresses() {
+        // None on either side must not emit.
+        assert_eq!(
+            approved_changes(&[mr(1, None, None)], &[mr(1, None, Some(true))]),
+            0
+        );
+        assert_eq!(
+            approved_changes(&[mr(1, None, Some(false))], &[mr(1, None, None)]),
+            0
+        );
+    }
+
+    #[test]
+    fn already_approved_does_not_re_emit() {
+        let old = vec![mr(1, Some("mergeable"), Some(true))];
+        let new = vec![mr(1, Some("mergeable"), Some(true))];
+        assert_eq!(approved_changes(&old, &new), 0);
     }
 }

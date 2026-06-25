@@ -30,6 +30,9 @@ pub struct MergeRequestSummary {
     pub updated_at: Timestamp,
     pub detailed_merge_status: Option<String>,
     pub has_conflicts: Option<bool>,
+    /// Real approval state. `None` = unknown (suppresses approval notifications).
+    #[serde(default)]
+    pub approved: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

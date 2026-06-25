@@ -3,8 +3,14 @@ use crate::forge_clients::traits::ForgeClient;
 use crate::forge_clients::types::*;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use futures::future::join_all;
 use reqwest::Client;
 use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct GlApprovals {
+    approved: bool,
+}
 
 #[derive(Debug, Deserialize)]
 struct GitLabUserMr {
@@ -55,6 +61,28 @@ impl GitLabClient {
         }
     }
 
+    /// Fetch approval state for a single MR. Returns `None` on error so a
+    /// transient failure degrades to "unknown" rather than a false notification.
+    async fn fetch_approved(&self, iid: u64) -> Option<bool> {
+        let url = format!(
+            "{}/projects/{}/merge_requests/{}/approvals",
+            self.base_url, self.project_id, iid
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json::<GlApprovals>()
+            .await
+            .ok()?;
+        Some(resp.approved)
+    }
+
     async fn fetch_pipeline_jobs(&self, pipeline_id: u64) -> Result<Vec<PipelineJob>> {
         let url = format!(
             "{}/projects/{}/pipelines/{}/jobs?per_page=100",
@@ -92,7 +120,8 @@ impl ForgeClient for GitLabClient {
             "{}/projects/{}/merge_requests?state=opened&per_page=100{}",
             self.base_url, self.project_id, author_filter
         );
-        self.client
+        let mut mrs = self
+            .client
             .get(&url)
             .header("PRIVATE-TOKEN", &self.token)
             .send()
@@ -102,7 +131,16 @@ impl ForgeClient for GitLabClient {
             .context("GitLab API returned error status for MR list")?
             .json::<Vec<MergeRequestSummary>>()
             .await
-            .context("Failed to parse MR list response")
+            .context("Failed to parse MR list response")?;
+
+        // `detailed_merge_status` is a single-blocker enum, not an approval flag.
+        // Fetch real approval state per MR (concurrently) for change detection.
+        let approvals = join_all(mrs.iter().map(|mr| self.fetch_approved(mr.iid))).await;
+        for (mr, approved) in mrs.iter_mut().zip(approvals) {
+            mr.approved = approved;
+        }
+
+        Ok(mrs)
     }
 
     async fn fetch_mr_detail(&self, iid: u64) -> Result<MergeRequestDetail> {

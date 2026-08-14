@@ -278,12 +278,10 @@ fn draw_project_filter_popup(
 
     let visible_rows = chunks[2].height as usize;
     let mut result_lines: Vec<Line> = Vec::new();
-    let offset = if visible_rows == 0 || filtered.len() <= visible_rows {
-        0
-    } else if selected < visible_rows {
-        0
+    let offset = if visible_rows > 0 && selected >= visible_rows {
+        selected + 1 - visible_rows
     } else {
-        (selected + 1).saturating_sub(visible_rows)
+        0
     };
     for (i, (_idx, name)) in filtered
         .iter()

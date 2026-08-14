@@ -698,7 +698,7 @@ impl ClientState {
             .enumerate()
             .map(|(i, p)| (i, p.name.clone()))
             .collect();
-        all.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        all.sort_by_key(|(_, name)| name.to_lowercase());
         self.popup = PopupState::ProjectFilter {
             input: String::new(),
             filtered: all,
@@ -724,7 +724,7 @@ impl ClientState {
             if input.is_empty() {
                 let mut all: Vec<(usize, String)> =
                     projects.iter().map(|(i, n)| (*i, n.to_string())).collect();
-                all.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                all.sort_by_key(|(_, name)| name.to_lowercase());
                 *filtered = all;
             } else {
                 use nucleo_matcher::Matcher;

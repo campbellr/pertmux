@@ -746,8 +746,8 @@ impl ClientState {
     }
 
     /// Flatten all worktrees across all projects into
-    /// (project_idx, worktree_idx, "project/branch") entries.
-    fn worktree_search_entries(&self) -> Vec<(usize, usize, String)> {
+    /// ((project_idx, worktree_idx), "project/branch") entries.
+    fn worktree_search_entries(&self) -> Vec<((usize, usize), String)> {
         self.snapshot
             .projects
             .iter()
@@ -758,7 +758,7 @@ impl ClientState {
                     .enumerate()
                     .map(move |(wi, wt)| {
                         let branch = wt.branch.as_deref().unwrap_or("(detached)");
-                        (pi, wi, format!("{}/{}", proj.name, branch))
+                        ((pi, wi), format!("{}/{}", proj.name, branch))
                     })
             })
             .collect()
@@ -772,7 +772,7 @@ impl ClientState {
         }
         self.popup = PopupState::WorktreeSearch {
             input: String::new(),
-            filtered: entries.into_iter().map(|(pi, wi, _)| (pi, wi)).collect(),
+            filtered: entries.into_iter().map(|(idx, _)| idx).collect(),
             selected: 0,
         };
     }
@@ -785,7 +785,7 @@ impl ClientState {
             selected,
         } = &mut self.popup
         {
-            *filtered = filter_worktree_entries(&entries, input);
+            *filtered = fuzzy_filter(&entries, input);
             if *selected >= filtered.len() {
                 *selected = filtered.len().saturating_sub(1);
             }
@@ -793,11 +793,11 @@ impl ClientState {
     }
 }
 
-/// Fuzzy-filter flattened worktree entries by label, ranked by match score.
-/// An empty input returns all entries in original order.
-fn filter_worktree_entries(entries: &[(usize, usize, String)], input: &str) -> Vec<(usize, usize)> {
+/// Fuzzy-filter `(payload, label)` entries by label, ranked by match score.
+/// An empty input returns all payloads in original order.
+fn fuzzy_filter<T: Copy>(entries: &[(T, String)], input: &str) -> Vec<T> {
     if input.is_empty() {
-        return entries.iter().map(|(pi, wi, _)| (*pi, *wi)).collect();
+        return entries.iter().map(|(payload, _)| *payload).collect();
     }
 
     use nucleo_matcher::Matcher;
@@ -807,17 +807,17 @@ fn filter_worktree_entries(entries: &[(usize, usize, String)], input: &str) -> V
     let pattern = Pattern::parse(input, CaseMatching::Ignore, Normalization::Smart);
 
     let mut buf = Vec::new();
-    let mut scored: Vec<((usize, usize), u32)> = entries
+    let mut scored: Vec<(T, u32)> = entries
         .iter()
-        .filter_map(|(pi, wi, label)| {
+        .filter_map(|(payload, label)| {
             let haystack = nucleo_matcher::Utf32Str::new(label, &mut buf);
             pattern
                 .score(haystack, &mut matcher)
-                .map(|score| ((*pi, *wi), score))
+                .map(|score| (*payload, score))
         })
         .collect();
     scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
-    scored.into_iter().map(|(idx, _)| idx).collect()
+    scored.into_iter().map(|(payload, _)| payload).collect()
 }
 
 pub async fn run() -> Result<()> {
@@ -1973,45 +1973,45 @@ fn show_connection_error(sock_path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::filter_worktree_entries;
+    use super::fuzzy_filter;
 
-    fn entries() -> Vec<(usize, usize, String)> {
+    fn entries() -> Vec<((usize, usize), String)> {
         vec![
-            (0, 0, "pertmux/main".to_string()),
-            (0, 1, "pertmux/feat-search".to_string()),
-            (1, 0, "mainapi/main".to_string()),
-            (1, 1, "mainapi/fix-auth".to_string()),
+            ((0, 0), "pertmux/main".to_string()),
+            ((0, 1), "pertmux/feat-search".to_string()),
+            ((1, 0), "mainapi/main".to_string()),
+            ((1, 1), "mainapi/fix-auth".to_string()),
         ]
     }
 
     #[test]
     fn empty_input_returns_all_in_order() {
-        let result = filter_worktree_entries(&entries(), "");
+        let result = fuzzy_filter(&entries(), "");
         assert_eq!(result, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
     }
 
     #[test]
     fn matches_branch_name() {
-        let result = filter_worktree_entries(&entries(), "search");
+        let result = fuzzy_filter(&entries(), "search");
         assert_eq!(result, vec![(0, 1)]);
     }
 
     #[test]
     fn matches_project_name() {
-        let result = filter_worktree_entries(&entries(), "mainapi");
+        let result = fuzzy_filter(&entries(), "mainapi");
         assert_eq!(result, vec![(1, 0), (1, 1)]);
     }
 
     #[test]
     fn matches_project_slash_branch() {
-        let result = filter_worktree_entries(&entries(), "pertmux/main");
+        let result = fuzzy_filter(&entries(), "pertmux/main");
         assert!(result.contains(&(0, 0)));
         assert_eq!(result[0], (0, 0));
     }
 
     #[test]
     fn no_match_returns_empty() {
-        let result = filter_worktree_entries(&entries(), "zzzqqq");
+        let result: Vec<(usize, usize)> = fuzzy_filter(&entries(), "zzzqqq");
         assert!(result.is_empty());
     }
 }

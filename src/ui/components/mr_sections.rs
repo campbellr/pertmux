@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::cards::{render_mr_card, render_worktree_card};
-use crate::app::SelectionSection;
-use crate::protocol::ProjectSnapshot;
 use crate::types::AgentPane;
 use crate::ui::{ACCENT, ProjectRenderData};
 use ratatui::{
@@ -16,28 +14,7 @@ use ratatui::{
     },
 };
 
-pub(crate) fn draw_mr_sections_client(
-    frame: &mut Frame,
-    proj: &ProjectSnapshot,
-    panes: &[crate::types::AgentPane],
-    mr_selected: usize,
-    worktree_selected: usize,
-    section: &SelectionSection,
-    list_focused: bool,
-    area: Rect,
-) {
-    let render = ProjectRenderData::from_snapshot(
-        proj,
-        panes,
-        mr_selected,
-        worktree_selected,
-        section,
-        list_focused,
-    );
-    draw_mr_sections_render(frame, &render, area);
-}
-
-fn draw_mr_sections_render(frame: &mut Frame, proj: &ProjectRenderData<'_>, area: Rect) {
+pub(crate) fn draw_mr_sections_render(frame: &mut Frame, proj: &ProjectRenderData<'_>, area: Rect) {
     let mr_count = proj.dashboard.linked_mrs.len().max(1) as u16;
     let wt_count = proj.cached_worktrees.len().max(1) as u16;
 

@@ -1,9 +1,9 @@
-use super::mr_sections::draw_mr_sections_client;
+use super::mr_sections::draw_mr_sections_render;
 use crate::app::SelectionSection;
 use crate::client::ClientState;
 use crate::types::PaneStatus;
-use crate::ui::ACCENT;
 use crate::ui::helpers::{compute_scroll, status_badge};
+use crate::ui::{ACCENT, ProjectRenderData};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -107,8 +107,7 @@ pub(crate) fn draw_list_panel_client(frame: &mut Frame, state: &ClientState, are
             .selection_section
             .get(state.active_project)
             .unwrap_or(&SelectionSection::Worktrees);
-        draw_mr_sections_client(
-            frame,
+        let render = ProjectRenderData::from_snapshot(
             proj,
             &state.snapshot.panes,
             *state.mr_selected.get(state.active_project).unwrap_or(&0),
@@ -118,8 +117,8 @@ pub(crate) fn draw_list_panel_client(frame: &mut Frame, state: &ClientState, are
                 .unwrap_or(&0),
             section,
             !state.project_focused,
-            inner,
         );
+        draw_mr_sections_render(frame, &render, inner);
         return;
     }
 

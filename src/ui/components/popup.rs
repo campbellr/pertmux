@@ -38,6 +38,16 @@ pub(crate) fn draw_popup_client(frame: &mut Frame, state: &ClientState, area: Re
         return;
     }
 
+    if let PopupState::SessionSearch {
+        input,
+        filtered,
+        selected,
+    } = &state.popup
+    {
+        draw_session_search_popup(frame, state, input, filtered, *selected, area);
+        return;
+    }
+
     if let PopupState::AgentActions { selected, .. } = &state.popup {
         draw_agent_actions_popup(frame, &state.snapshot.agent_actions, *selected, area);
         return;
@@ -79,6 +89,7 @@ pub(crate) fn draw_popup_client(frame: &mut Frame, state: &ClientState, area: Re
         PopupState::None
         | PopupState::ProjectFilter { .. }
         | PopupState::WorktreeSearch { .. }
+        | PopupState::SessionSearch { .. }
         | PopupState::ChangeSummary { .. }
         | PopupState::AgentActions { .. }
         | PopupState::MrOverview { .. }
@@ -461,6 +472,190 @@ fn draw_worktree_search_popup(
             ),
             Span::raw(" ".repeat(
                 proj_col.saturating_sub(row.project.chars().count())
+                    + 1
+                    + age_col.saturating_sub(row.age.chars().count()),
+            )),
+            Span::styled(row.age.clone(), Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+        ]);
+        result_lines.push(Line::from(spans));
+    }
+
+    if result_lines.is_empty() {
+        result_lines.push(Line::from(Span::styled(
+            "   no matches",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(result_lines), chunks[2]);
+}
+
+fn draw_session_search_popup(
+    frame: &mut Frame,
+    state: &ClientState,
+    input: &str,
+    filtered: &[usize],
+    selected: usize,
+    area: Rect,
+) {
+    let popup_w = 90u16.min(area.width.saturating_sub(4));
+    let list_h = filtered.len().clamp(1, 16) as u16;
+    let popup_h = (list_h + 4).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(popup_w)) / 2;
+    let y = (area.height.saturating_sub(popup_h)) / 2;
+    let rect = Rect::new(x, y, popup_w, popup_h);
+
+    let block = Block::default()
+        .title(Line::from(Span::styled(
+            " Find Session ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT));
+
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(inner);
+
+    let input_line = Line::from(vec![
+        Span::styled(
+            " > ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            input,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("\u{2588}", Style::default().fg(ACCENT)),
+    ]);
+    frame.render_widget(Paragraph::new(input_line), chunks[0]);
+
+    let divider = Line::from(Span::styled(
+        "\u{2500}".repeat(inner.width as usize),
+        Style::default().fg(Color::Indexed(236)),
+    ));
+    frame.render_widget(Paragraph::new(divider), chunks[1]);
+
+    let visible = chunks[2].height as usize;
+
+    // Pass 1: collect row data for all filtered entries so column widths are
+    // stable across rows (and while scrolling).
+    struct Row<'a> {
+        is_sel: bool,
+        title: &'a str,
+        badge: Option<Span<'static>>,
+        badge_w: usize,
+        agent: &'a str,
+        location: String,
+        age: String,
+    }
+    let mut rows: Vec<Row> = Vec::with_capacity(filtered.len());
+    // Row index of the selection, which drifts from `selected` if any pane is
+    // skipped below.
+    let mut sel_row = 0usize;
+    for (i, pane_idx) in filtered.iter().enumerate() {
+        let Some(pane) = state.snapshot.panes.get(*pane_idx) else {
+            continue;
+        };
+        if i == selected {
+            sel_row = rows.len();
+        }
+        let badge = if matches!(pane.status, crate::types::PaneStatus::Unknown) {
+            None
+        } else {
+            Some(crate::ui::helpers::compact_status_badge(&pane.status))
+        };
+        let badge_w = badge
+            .as_ref()
+            .map(|s| s.content.chars().count())
+            .unwrap_or(0);
+
+        rows.push(Row {
+            is_sel: i == selected,
+            title: pane.display_title(),
+            badge,
+            badge_w,
+            agent: pane.display_agent(),
+            location: format!(
+                "{}:{}.{}",
+                pane.session_name, pane.window_index, pane.pane_index
+            ),
+            age: pane.time_ago().unwrap_or_else(|| "—".to_string()),
+        });
+    }
+
+    let badge_col = rows.iter().map(|r| r.badge_w).max().unwrap_or(0);
+    let agent_col = rows
+        .iter()
+        .map(|r| r.agent.chars().count())
+        .max()
+        .unwrap_or(0);
+    let loc_col = rows
+        .iter()
+        .map(|r| r.location.chars().count())
+        .max()
+        .unwrap_or(0);
+    let age_col = rows
+        .iter()
+        .map(|r| r.age.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let start = if visible > 0 && sel_row >= visible {
+        sel_row + 1 - visible
+    } else {
+        0
+    };
+
+    // Pass 2: render visible rows with fixed columns:
+    //  ▸ title (left)      [badge] [agent] [session:win.pane] [age]
+    let width = inner.width as usize;
+    let prefix_w = 3;
+    let title_col = width
+        .saturating_sub(prefix_w + badge_col + 1 + agent_col + 1 + loc_col + 1 + age_col + 1)
+        .max(8);
+    let mut result_lines: Vec<Line> = Vec::new();
+    for row in rows.iter().skip(start).take(visible) {
+        // Display width, not prefix.len(): the selected arrow is 3 bytes but 1 column.
+        let prefix = if row.is_sel { " \u{25b8} " } else { "   " };
+        let title_txt = crate::ui::helpers::truncate(row.title, title_col);
+        let title_pad = title_col.saturating_sub(title_txt.chars().count());
+
+        let title_style = if row.is_sel {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let mut spans = vec![
+            Span::styled(prefix, Style::default().fg(ACCENT)),
+            Span::styled(title_txt, title_style),
+            Span::raw(" ".repeat(title_pad + badge_col.saturating_sub(row.badge_w))),
+        ];
+        spans.extend(row.badge.iter().cloned());
+        spans.extend([
+            Span::raw(" "),
+            Span::styled(
+                row.agent.to_string(),
+                Style::default().fg(Color::Indexed(245)),
+            ),
+            Span::raw(" ".repeat(agent_col.saturating_sub(row.agent.chars().count()) + 1)),
+            Span::styled(
+                row.location.clone(),
+                Style::default().fg(Color::Indexed(245)),
+            ),
+            Span::raw(" ".repeat(
+                loc_col.saturating_sub(row.location.chars().count())
                     + 1
                     + age_col.saturating_sub(row.age.chars().count()),
             )),

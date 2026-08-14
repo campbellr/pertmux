@@ -25,6 +25,7 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SelectionSection {
     MergeRequests,
     Worktrees,
@@ -68,6 +69,13 @@ pub enum PopupState {
     WorktreeSearch {
         input: String,
         filtered: Vec<(usize, usize)>,
+        selected: usize,
+    },
+    /// Global fuzzy search over coding-agent panes across all tmux sessions.
+    /// `filtered` holds indices into `DashboardSnapshot.panes`.
+    SessionSearch {
+        input: String,
+        filtered: Vec<usize>,
         selected: usize,
     },
     ChangeSummary {

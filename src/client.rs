@@ -5,6 +5,7 @@ use crate::project_sort::{ProjectSort, load_last_sort, save_last_sort};
 use crate::project_stats::build_sorted_project_stats;
 use crate::protocol::{ClientMsg, DaemonMsg, DashboardSnapshot, PROTOCOL_VERSION, RefreshStep};
 use crate::tmux;
+use crate::types::AgentPane;
 use crate::ui;
 use anyhow::Result;
 use bytes::Bytes;
@@ -208,6 +209,12 @@ impl ClientState {
         // (project_idx, worktree_idx) pairs never go stale.
         if matches!(self.popup, PopupState::WorktreeSearch { .. }) {
             self.recompute_worktree_search();
+        }
+
+        // Panes churn on every 2s tick, so the same staleness applies to the
+        // session search indices.
+        if matches!(self.popup, PopupState::SessionSearch { .. }) {
+            self.resync_session_search();
         }
 
         // After updating the snapshot, try to fulfil a pending "open worktree pane"
@@ -791,6 +798,145 @@ impl ClientState {
             }
         }
     }
+
+    /// Flatten every agent pane into (pane_idx, haystack) entries. The haystack
+    /// includes the tmux session name and the pane directory so a session can be
+    /// found by title, by tmux session, or by worktree name.
+    fn session_search_entries(&self) -> Vec<(usize, String)> {
+        self.snapshot
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(i, pane)| {
+                let dir = std::path::Path::new(&pane.pane_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (
+                    i,
+                    format!("{}/{} {}", pane.session_name, pane.display_title(), dir),
+                )
+            })
+            .collect()
+    }
+
+    fn open_session_search(&mut self) {
+        let entries = self.session_search_entries();
+        if entries.is_empty() {
+            self.notify("No agent sessions found");
+            return;
+        }
+        self.popup = PopupState::SessionSearch {
+            input: String::new(),
+            filtered: entries.into_iter().map(|(i, _)| i).collect(),
+            selected: 0,
+        };
+    }
+
+    /// Recompute after the user edits the query. The highlight keeps its
+    /// position in the list, as in the worktree search.
+    fn recompute_session_search(&mut self) {
+        self.refilter_session_search(None);
+    }
+
+    /// Recompute after a snapshot refresh. Panes churn every 2s, so keep the
+    /// highlight on the pane it was pointing at rather than on its position —
+    /// otherwise a session exiting above the cursor silently retargets Enter.
+    fn resync_session_search(&mut self) {
+        let anchor = if let PopupState::SessionSearch {
+            filtered, selected, ..
+        } = &self.popup
+        {
+            filtered
+                .get(*selected)
+                .and_then(|i| self.snapshot.panes.get(*i))
+                .map(|p| p.pane_id.clone())
+        } else {
+            None
+        };
+        self.refilter_session_search(anchor);
+    }
+
+    fn refilter_session_search(&mut self, anchor: Option<String>) {
+        let entries = self.session_search_entries();
+        let panes = &self.snapshot.panes;
+        if let PopupState::SessionSearch {
+            input,
+            filtered,
+            selected,
+        } = &mut self.popup
+        {
+            *filtered = fuzzy_filter(&entries, input);
+            let reanchored = anchor.and_then(|id| {
+                filtered
+                    .iter()
+                    .position(|i| panes.get(*i).is_some_and(|p| p.pane_id == id))
+            });
+            *selected = reanchored
+                .unwrap_or(*selected)
+                .min(filtered.len().saturating_sub(1));
+        }
+    }
+
+    /// Point the dashboard at whichever card owns `pane`: the MR whose linked
+    /// pane it is, else the worktree living at its path.
+    fn focus_pane_in_dashboard(&mut self, pane_idx: usize) {
+        let Some(pane) = self.snapshot.panes.get(pane_idx) else {
+            return;
+        };
+        let Some((project_idx, section, idx)) = locate_pane(&self.snapshot, pane) else {
+            return;
+        };
+        self.active_project = project_idx;
+        if let Some(proj) = self.snapshot.projects.get(project_idx) {
+            save_last_project(&proj.name);
+        }
+        if let Some(slot) = self.selection_section.get_mut(project_idx) {
+            *slot = section;
+        }
+        let selection = match section {
+            SelectionSection::MergeRequests => self.mr_selected.get_mut(project_idx),
+            SelectionSection::Worktrees => self.worktree_selected.get_mut(project_idx),
+        };
+        if let Some(slot) = selection {
+            *slot = idx;
+        }
+    }
+}
+
+/// Resolve which project card a pane belongs to. An MR link (by pane id) wins
+/// over a path match, since the MR card carries strictly more context.
+fn locate_pane(
+    snapshot: &DashboardSnapshot,
+    pane: &AgentPane,
+) -> Option<(usize, SelectionSection, usize)> {
+    for (pi, proj) in snapshot.projects.iter().enumerate() {
+        if let Some(mi) = proj.dashboard.linked_mrs.iter().position(|mr| {
+            mr.tmux_pane
+                .as_ref()
+                .is_some_and(|p| p.pane_id == pane.pane_id)
+        }) {
+            return Some((pi, SelectionSection::MergeRequests, mi));
+        }
+    }
+
+    let pane_path = pane
+        .canonical_path
+        .clone()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::fs::canonicalize(&pane.pane_path).ok())?;
+
+    snapshot.projects.iter().enumerate().find_map(|(pi, proj)| {
+        proj.cached_worktrees
+            .iter()
+            .position(|wt| {
+                wt.path
+                    .as_deref()
+                    .and_then(|p| std::fs::canonicalize(p).ok())
+                    .is_some_and(|p| p == pane_path)
+            })
+            .map(|wi| (pi, SelectionSection::Worktrees, wi))
+    })
 }
 
 /// Fuzzy-filter `(payload, label)` entries by label, ranked by match score.
@@ -1310,6 +1456,64 @@ async fn handle_key(
         return Ok(());
     }
 
+    if matches!(state.popup, PopupState::SessionSearch { .. }) {
+        match code {
+            KeyCode::Esc => state.close_popup(),
+            KeyCode::Enter => {
+                let target = if let PopupState::SessionSearch {
+                    filtered, selected, ..
+                } = &state.popup
+                {
+                    filtered.get(*selected).copied()
+                } else {
+                    None
+                };
+                state.close_popup();
+                if let Some(idx) = target {
+                    let pane_id = state.snapshot.panes.get(idx).map(|p| p.pane_id.clone());
+                    let before = state.current_mr_iid();
+                    state.focus_pane_in_dashboard(idx);
+                    maybe_send_select_mr(state, framed, before).await?;
+                    if let Some(pane_id) = pane_id
+                        && let Err(e) = tmux::switch_to_pane(&pane_id)
+                    {
+                        state.notify(format!("Focus failed: {}", e));
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let PopupState::SessionSearch {
+                    filtered, selected, ..
+                } = &mut state.popup
+                    && *selected + 1 < filtered.len()
+                {
+                    *selected += 1;
+                }
+            }
+            KeyCode::Up => {
+                if let PopupState::SessionSearch { selected, .. } = &mut state.popup
+                    && *selected > 0
+                {
+                    *selected -= 1;
+                }
+            }
+            KeyCode::Backspace => {
+                if let PopupState::SessionSearch { input, .. } = &mut state.popup {
+                    input.pop();
+                }
+                state.recompute_session_search();
+            }
+            KeyCode::Char(ch) => {
+                if let PopupState::SessionSearch { input, .. } = &mut state.popup {
+                    input.push(ch);
+                }
+                state.recompute_session_search();
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if matches!(state.popup, PopupState::ChangeSummary { .. }) {
         match code {
             KeyCode::Esc => state.close_popup(),
@@ -1665,6 +1869,8 @@ async fn handle_key(
                 state.open_activity_feed();
             } else if ch == kb.worktree_search {
                 state.open_worktree_search();
+            } else if ch == kb.session_search {
+                state.open_session_search();
             } else if ch == 'K' {
                 state.open_keybindings_help();
             }
@@ -1698,6 +1904,7 @@ fn popup_action_msg(state: &ClientState) -> Option<ClientMsg> {
         }),
         PopupState::ProjectFilter { .. }
         | PopupState::WorktreeSearch { .. }
+        | PopupState::SessionSearch { .. }
         | PopupState::ChangeSummary { .. }
         | PopupState::AgentActions { .. }
         | PopupState::MrOverview { .. }
@@ -1973,7 +2180,14 @@ fn show_connection_error(sock_path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::fuzzy_filter;
+    use super::{AgentPane, DashboardSnapshot, SelectionSection, fuzzy_filter, locate_pane};
+    use crate::config::ProjectForge;
+    use crate::forge_clients::types::{ForgeUser, MergeRequestSummary};
+    use crate::git::WorktreeInfo;
+    use crate::linking::{DashboardState, LinkedMergeRequest};
+    use crate::protocol::ProjectSnapshot;
+    use crate::types::PaneStatus;
+    use crate::worktrunk::{WtCommit, WtWorktree};
 
     fn entries() -> Vec<((usize, usize), String)> {
         vec![
@@ -2013,5 +2227,168 @@ mod tests {
     fn no_match_returns_empty() {
         let result: Vec<(usize, usize)> = fuzzy_filter(&entries(), "zzzqqq");
         assert!(result.is_empty());
+    }
+    fn pane(pane_id: &str, path: &str) -> AgentPane {
+        AgentPane {
+            pane_id: pane_id.to_string(),
+            session_name: "sess".to_string(),
+            window_index: 0,
+            pane_index: 0,
+            pane_title: "OC | work".to_string(),
+            pane_path: path.to_string(),
+            canonical_path: std::fs::canonicalize(path)
+                .ok()
+                .and_then(|p| p.to_str().map(String::from)),
+            pane_pid: 1,
+            pane_command: "opencode".to_string(),
+            status: PaneStatus::Idle,
+            db_session_title: Some("Work".to_string()),
+            agent: Some("opencode".to_string()),
+            model: None,
+            last_activity: None,
+            status_changed_at: None,
+            db_session_id: None,
+            last_response: None,
+        }
+    }
+
+    fn worktree(path: &str, branch: &str) -> WtWorktree {
+        WtWorktree {
+            branch: Some(branch.to_string()),
+            path: Some(path.to_string()),
+            kind: "worktree".to_string(),
+            commit: WtCommit {
+                sha: "abc".to_string(),
+                short_sha: "abc".to_string(),
+                message: "m".to_string(),
+                timestamp: 0,
+            },
+            working_tree: None,
+            main_state: None,
+            main: None,
+            remote: None,
+            worktree: None,
+            is_main: false,
+            is_current: false,
+            is_previous: false,
+            symbols: None,
+        }
+    }
+
+    fn linked_mr(branch: &str, tmux_pane: Option<AgentPane>) -> LinkedMergeRequest {
+        LinkedMergeRequest {
+            mr: MergeRequestSummary {
+                iid: 1,
+                title: "feat: x".to_string(),
+                state: "opened".to_string(),
+                source_branch: branch.to_string(),
+                target_branch: "main".to_string(),
+                author: ForgeUser {
+                    id: 1,
+                    username: "u".to_string(),
+                    name: "U".to_string(),
+                },
+                draft: false,
+                user_notes_count: 0,
+                web_url: "https://example.com/1".to_string(),
+                created_at: "2026-03-01T00:00:00.000Z".parse().unwrap(),
+                updated_at: "2026-03-01T00:00:00.000Z".parse().unwrap(),
+                detailed_merge_status: None,
+                has_conflicts: None,
+                approved: None,
+            },
+            worktree: Some(WorktreeInfo {
+                path: "/tmp".to_string(),
+                branch: Some(branch.to_string()),
+                head_commit: "abc".to_string(),
+                is_main: false,
+                is_bare: false,
+            }),
+            tmux_pane,
+            has_new_activity: false,
+        }
+    }
+
+    fn snapshot(projects: Vec<ProjectSnapshot>, panes: Vec<AgentPane>) -> DashboardSnapshot {
+        DashboardSnapshot {
+            projects,
+            panes,
+            groups: vec![],
+            detail: None,
+            error: None,
+            seconds_since_refresh: 0,
+            default_agent_command: None,
+            default_worktree_with_prompt: None,
+            keybindings: Default::default(),
+            pending_changes: vec![],
+            agent_actions: vec![],
+            pending_agent_changes: vec![],
+            global_mrs: vec![],
+            activity_feed: vec![],
+            auto_switch_project: false,
+        }
+    }
+
+    fn project(name: &str, mrs: Vec<LinkedMergeRequest>, wts: Vec<WtWorktree>) -> ProjectSnapshot {
+        ProjectSnapshot {
+            name: name.to_string(),
+            source: ProjectForge::Gitlab,
+            project_path: format!("team/{}", name),
+            local_path: "/tmp".to_string(),
+            dashboard: DashboardState { linked_mrs: mrs },
+            cached_worktrees: wts,
+            cached_mr_detail: None,
+            cached_pipeline_jobs: vec![],
+            cached_threads: vec![],
+            cached_threads_iid: None,
+        }
+    }
+
+    #[test]
+    fn locate_pane_prefers_mr_link_over_path() {
+        let dir = std::env::temp_dir();
+        let dir = dir.to_str().unwrap();
+        let p = pane("%7", dir);
+        let snap = snapshot(
+            vec![project(
+                "pertmux",
+                vec![linked_mr("other", None), linked_mr("feat", Some(p.clone()))],
+                vec![worktree(dir, "feat")],
+            )],
+            vec![p.clone()],
+        );
+        assert_eq!(
+            locate_pane(&snap, &p),
+            Some((0, SelectionSection::MergeRequests, 1))
+        );
+    }
+
+    #[test]
+    fn locate_pane_falls_back_to_worktree_path() {
+        let dir = std::env::temp_dir();
+        let dir = dir.to_str().unwrap();
+        let p = pane("%7", dir);
+        let snap = snapshot(
+            vec![
+                project("other", vec![], vec![]),
+                project(
+                    "pertmux",
+                    vec![],
+                    vec![worktree("/nonexistent-xyz", "a"), worktree(dir, "feat")],
+                ),
+            ],
+            vec![p.clone()],
+        );
+        assert_eq!(
+            locate_pane(&snap, &p),
+            Some((1, SelectionSection::Worktrees, 1))
+        );
+    }
+
+    #[test]
+    fn locate_pane_returns_none_when_unknown() {
+        let p = pane("%7", "/nonexistent-abc");
+        let snap = snapshot(vec![project("pertmux", vec![], vec![])], vec![p.clone()]);
+        assert_eq!(locate_pane(&snap, &p), None);
     }
 }

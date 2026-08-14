@@ -14,16 +14,46 @@ use ratatui::{
     },
 };
 
+/// Height of a single MR/worktree card, in rows.
+const CARD_H: u16 = 4;
+/// Border rows consumed by a section's surrounding block.
+const CHROME_H: u16 = 2;
+/// A section never shrinks below one full card plus its borders.
+const MIN_SECTION_H: u16 = CARD_H + CHROME_H;
+
+/// Split the list panel between the worktree and MR sections.
+///
+/// Purely proportional sizing starves the MR section on repos with many
+/// worktrees (mainapi: 20+ worktrees vs 2 MRs => MRs got ~8% of the height),
+/// so each section keeps room for at least one card.
+fn section_heights(total: u16, wt_count: u16, mr_count: u16) -> (u16, u16) {
+    if total == 0 {
+        return (0, 0);
+    }
+    let want = |n: u16| n.max(1).saturating_mul(CARD_H).saturating_add(CHROME_H);
+    let (wt_want, mr_want) = (want(wt_count), want(mr_count));
+
+    if wt_want.saturating_add(mr_want) <= total {
+        // Everything fits; the surplus goes to the worktree section.
+        return (total - mr_want, mr_want);
+    }
+
+    let floor = MIN_SECTION_H.min(total / 2);
+    let wt = ((total as u32 * wt_want as u32) / (wt_want as u32 + mr_want as u32)) as u16;
+    let wt = wt.clamp(floor, total.saturating_sub(floor));
+    (wt, total - wt)
+}
+
 pub(crate) fn draw_mr_sections_render(frame: &mut Frame, proj: &ProjectRenderData<'_>, area: Rect) {
-    let mr_count = proj.dashboard.linked_mrs.len().max(1) as u16;
-    let wt_count = proj.cached_worktrees.len().max(1) as u16;
+    let (wt_h, mr_h) = section_heights(
+        area.height,
+        proj.cached_worktrees.len() as u16,
+        proj.dashboard.linked_mrs.len() as u16,
+    );
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Ratio(wt_count as u32, wt_count as u32 + mr_count as u32),
-            Constraint::Ratio(mr_count as u32, wt_count as u32 + mr_count as u32),
-        ])
+        .constraints([Constraint::Length(wt_h), Constraint::Length(mr_h)])
         .split(area);
 
     draw_worktree_block_render(
@@ -73,7 +103,7 @@ fn draw_mr_block_render(
         return;
     }
 
-    let card_h: u16 = 4;
+    let card_h = CARD_H;
     let total_content = mr_count as u16 * card_h;
     let selected_y = proj.mr_selected as u16 * card_h;
 
@@ -166,7 +196,7 @@ fn draw_worktree_block_render(
 
     let pane_by_path = build_pane_by_path(proj.panes);
 
-    let card_h: u16 = 4;
+    let card_h = CARD_H;
     let total_content = wt_count as u16 * card_h;
     let selected_y = proj.worktree_selected as u16 * card_h;
 
@@ -210,5 +240,58 @@ fn draw_worktree_block_render(
             }),
             &mut scrollbar_state,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CHROME_H, MIN_SECTION_H, section_heights};
+
+    #[test]
+    fn both_sections_fit_exactly() {
+        // 3 worktrees + 2 MRs = 14 + 10 rows.
+        assert_eq!(section_heights(24, 3, 2), (14, 10));
+    }
+
+    #[test]
+    fn surplus_goes_to_worktrees() {
+        assert_eq!(section_heights(50, 3, 2), (40, 10));
+    }
+
+    #[test]
+    fn many_worktrees_leave_room_for_mrs() {
+        // The regression: 22 worktrees vs 2 MRs used to leave the MR section
+        // with ~8% of the height.
+        let (wt, mr) = section_heights(40, 22, 2);
+        assert_eq!(wt + mr, 40);
+        assert!(mr >= MIN_SECTION_H, "mr section starved: {mr}");
+        assert!(wt >= MIN_SECTION_H, "worktree section starved: {wt}");
+    }
+
+    #[test]
+    fn many_mrs_leave_room_for_worktrees() {
+        let (wt, mr) = section_heights(40, 1, 30);
+        assert_eq!(wt + mr, 40);
+        assert!(wt >= MIN_SECTION_H, "worktree section starved: {wt}");
+    }
+
+    #[test]
+    fn floor_guarantees_one_visible_card() {
+        let (wt, mr) = section_heights(40, 22, 2);
+        assert!(wt - CHROME_H >= 4 && mr - CHROME_H >= 4);
+    }
+
+    #[test]
+    fn empty_sections_still_get_a_row() {
+        // max(1) in `want` keeps the "No open MRs" placeholder visible.
+        assert_eq!(section_heights(24, 0, 0), (18, 6));
+    }
+
+    #[test]
+    fn degrades_without_panicking_on_tiny_areas() {
+        for total in 0..=MIN_SECTION_H * 2 {
+            let (wt, mr) = section_heights(total, 22, 2);
+            assert_eq!(wt + mr, total, "total {total}");
+        }
     }
 }

@@ -49,7 +49,12 @@ fn draw_mr_sections_render(frame: &mut Frame, proj: &ProjectRenderData<'_>, area
         ])
         .split(area);
 
-    draw_worktree_block_render(frame, proj, chunks[0], proj.list_focused && !proj.mr_focused);
+    draw_worktree_block_render(
+        frame,
+        proj,
+        chunks[0],
+        proj.list_focused && !proj.mr_focused,
+    );
     draw_mr_block_render(frame, proj, chunks[1], proj.list_focused && proj.mr_focused);
 }
 

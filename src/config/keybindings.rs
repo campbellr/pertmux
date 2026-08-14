@@ -15,6 +15,7 @@ pub struct KeybindingsConfig {
     pub activity_feed: char,
     pub open_worktree_with_prompt: char,
     pub worktree_search: char,
+    pub session_search: char,
 }
 
 impl Default for KeybindingsConfig {
@@ -32,6 +33,7 @@ impl Default for KeybindingsConfig {
             activity_feed: 'A',
             open_worktree_with_prompt: 'w',
             worktree_search: 'W',
+            session_search: 'S',
         }
     }
 }
@@ -56,6 +58,7 @@ impl KeybindingsConfig {
             activity_feed,
             open_worktree_with_prompt,
             worktree_search,
+            session_search,
         } = self;
         vec![
             (*refresh, "Refresh data"),
@@ -70,6 +73,7 @@ impl KeybindingsConfig {
             (*delete_worktree, "Delete worktree"),
             (*merge_worktree, "Merge worktree"),
             (*worktree_search, "Global worktree search"),
+            (*session_search, "Global agent session search"),
         ]
     }
 }

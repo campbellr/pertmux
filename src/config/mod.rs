@@ -217,6 +217,8 @@ impl Config {
             (kb.mr_overview, "mr_overview"),
             (kb.activity_feed, "activity_feed"),
             (kb.open_worktree_with_prompt, "open_worktree_with_prompt"),
+            (kb.worktree_search, "worktree_search"),
+            (kb.session_search, "session_search"),
         ];
         for (ch, name) in &bindings {
             if let Some(existing) = key_map.get(ch) {

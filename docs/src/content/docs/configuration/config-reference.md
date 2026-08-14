@@ -71,6 +71,7 @@ Remap action keys. Navigation keys (`j`/`k`/`↑`/`↓`/`Tab`/`Enter`/`Esc`/`q`)
 | `agent_actions` | string | `"a"` | Open agent actions panel |
 | `activity_feed` | string | `"A"` | Open Activity Feed popup — navigate recent events and jump to the relevant pane or MR |
 | `worktree_search` | string | `"W"` | Global worktree search — fuzzy search worktrees across all projects |
+| `session_search` | string | `"S"` | Global agent session search — fuzzy search agent sessions across all tmux sessions |
 
 ## `[[agent_action]]`
 

@@ -45,6 +45,14 @@ Status priority for display: Busy > Retry > Idle > Unknown.
 
 Press **`a`** on a worktree with an active agent session to send commands to the agent — rebase, fix pipeline failures, and more. Actions are delivered via HTTP API for opencode and via tmux send-keys for Claude Code. See [Agent Actions](/features/agent-actions/) for details.
 
+## Global session search
+
+Press **`S`** anywhere in the dashboard to fuzzy-search every agent session pertmux can see, across all tmux sessions and projects. Each result shows the session title, status badge, agent name, `session:window.pane` location, and time since last activity. Queries match the session title, the tmux session name, and the worktree directory, so `mainapi`, `sess-name`, or a few words of the title all work.
+
+Press `Enter` to jump: pertmux switches tmux focus to that pane and points the dashboard at the card that owns it — the MR if the pane is linked to one, otherwise the worktree at its path. The key is configurable via `session_search` in `[keybindings]`.
+
+One row is shown per pane running an agent, since that is what `Enter` can switch to.
+
 ## Session details
 
 When you select an agent pane, the detail panel shows:

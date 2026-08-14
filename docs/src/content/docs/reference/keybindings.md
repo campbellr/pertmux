@@ -31,6 +31,7 @@ Action keys can be remapped via the `[keybindings]` section in your config file.
 | `a` | Open agent actions panel | `agent_actions` |
 | `A` | Open Activity Feed popup — navigate recent events and jump to the relevant tmux pane or MR | `activity_feed` |
 | `W` | Global worktree search — fuzzy search worktrees across all projects | `worktree_search` |
+| `S` | Global agent session search — fuzzy search agent sessions across all tmux sessions | `session_search` |
 
 ## Global
 
@@ -57,6 +58,7 @@ mr_overview = "v"
 agent_actions = "P"
 activity_feed = "F"
 worktree_search = "/"
+session_search = "s"
 ```
 
 Missing keys use their defaults. Each action must have a unique key — duplicates are rejected at startup with a clear error message.

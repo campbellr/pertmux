@@ -240,6 +240,7 @@ Remap action keys. Navigation keys (`j`/`k`/`↑`/`↓`/`Tab`/`Enter`/`Esc`/`q`)
 | `merge_worktree` | string | `"M"` | Merge selected worktree into default branch |
 | `open_worktree_with_prompt` | string | `"w"` | Create worktree and inject a prompt into the agent (requires `default_worktree_with_prompt`) |
 | `worktree_search` | string | `"W"` | Global worktree search — fuzzy search worktrees across all projects |
+| `session_search` | string | `"S"` | Global agent session search — fuzzy search agent sessions across all tmux sessions |
 
 ## Keybindings
 

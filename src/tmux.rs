@@ -251,6 +251,19 @@ pub fn kill_window(pane_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Kill a single pane, leaving the rest of its window intact. tmux closes the
+/// window on its own if this was the last pane.
+pub fn kill_pane(pane_id: &str) -> anyhow::Result<()> {
+    let output = Command::new("tmux")
+        .args(["kill-pane", "-t", pane_id])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("tmux kill-pane failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
 pub fn switch_to_pane(pane_id: &str) -> anyhow::Result<()> {
     let our_session = get_own_session().unwrap_or_default();
 

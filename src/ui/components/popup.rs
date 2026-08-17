@@ -229,8 +229,8 @@ fn draw_project_filter_popup(
     area: Rect,
 ) {
     let popup_w = 50u16.min(area.width.saturating_sub(4));
-    let list_h = filtered.len().min(10) as u16;
-    let popup_h = (list_h + 4).min(area.height.saturating_sub(4));
+    let list_h = filtered.len().clamp(1, 10) as u16;
+    let popup_h = (list_h + 5).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
     let rect = Rect::new(x, y, popup_w, popup_h);
@@ -252,6 +252,7 @@ fn draw_project_filter_popup(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(1),
     ])
     .split(inner);
 
@@ -275,6 +276,14 @@ fn draw_project_filter_popup(
         Style::default().fg(Color::Indexed(236)),
     ));
     frame.render_widget(Paragraph::new(divider), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "\u{2191}\u{2193} navigate \u{00b7} Enter switch project \u{00b7} Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        chunks[3],
+    );
 
     let visible_rows = chunks[2].height as usize;
     let mut result_lines: Vec<Line> = Vec::new();
@@ -321,7 +330,7 @@ fn draw_worktree_search_popup(
 ) {
     let popup_w = 90u16.min(area.width.saturating_sub(4));
     let list_h = filtered.len().clamp(1, 16) as u16;
-    let popup_h = (list_h + 4).min(area.height.saturating_sub(4));
+    let popup_h = (list_h + 5).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
     let rect = Rect::new(x, y, popup_w, popup_h);
@@ -343,6 +352,7 @@ fn draw_worktree_search_popup(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(1),
     ])
     .split(inner);
 
@@ -366,6 +376,14 @@ fn draw_worktree_search_popup(
         Style::default().fg(Color::Indexed(236)),
     ));
     frame.render_widget(Paragraph::new(divider), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "\u{2191}\u{2193} navigate \u{00b7} Enter open \u{00b7} Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        chunks[3],
+    );
 
     let visible = chunks[2].height as usize;
     let start = if visible > 0 && selected >= visible {
@@ -499,7 +517,7 @@ fn draw_session_search_popup(
 ) {
     let popup_w = 90u16.min(area.width.saturating_sub(4));
     let list_h = filtered.len().clamp(1, 16) as u16;
-    let popup_h = (list_h + 4).min(area.height.saturating_sub(4));
+    let popup_h = (list_h + 5).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
     let rect = Rect::new(x, y, popup_w, popup_h);
@@ -521,6 +539,7 @@ fn draw_session_search_popup(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(1),
     ])
     .split(inner);
 
@@ -544,6 +563,19 @@ fn draw_session_search_popup(
         Style::default().fg(Color::Indexed(236)),
     ));
     frame.render_widget(Paragraph::new(divider), chunks[1]);
+
+    let dim = Style::default().fg(Color::DarkGray);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "\u{2191}\u{2193} navigate \u{00b7} Enter switch \u{00b7} ",
+                dim,
+            ),
+            Span::styled("Del kill pane", Style::default().fg(Color::Red)),
+            Span::styled(" \u{00b7} Esc cancel", dim),
+        ])),
+        chunks[3],
+    );
 
     let visible = chunks[2].height as usize;
 

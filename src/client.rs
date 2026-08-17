@@ -204,6 +204,10 @@ impl ClientState {
             self.project_scroll = self.project_scroll.min(max_idx);
         }
 
+        // Resolve the anchor against the outgoing pane list: `filtered` still
+        // indexes into it.
+        let session_anchor = self.session_search_anchor();
+
         self.snapshot = snapshot;
 
         // Worktree lists may have changed; refresh the global search results so
@@ -215,7 +219,7 @@ impl ClientState {
         // Panes churn on every 2s tick, so the same staleness applies to the
         // session search indices.
         if matches!(self.popup, PopupState::SessionSearch { .. }) {
-            self.resync_session_search();
+            self.refilter_session_search(session_anchor);
         }
 
         // After updating the snapshot, try to fulfil a pending "open worktree pane"
@@ -840,22 +844,23 @@ impl ClientState {
         self.refilter_session_search(None);
     }
 
-    /// Recompute after a snapshot refresh. Panes churn every 2s, so keep the
-    /// highlight on the pane it was pointing at rather than on its position —
+    /// The pane the highlight currently points at. Panes churn every 2s, so a
+    /// snapshot refresh re-anchors on this rather than on the cursor position —
     /// otherwise a session exiting above the cursor silently retargets Enter.
-    fn resync_session_search(&mut self) {
-        let anchor = if let PopupState::SessionSearch {
+    ///
+    /// Must be called before the new snapshot is installed: `filtered` indexes
+    /// into the pane list the popup was last rendered against.
+    fn session_search_anchor(&self) -> Option<String> {
+        let PopupState::SessionSearch {
             filtered, selected, ..
         } = &self.popup
-        {
-            filtered
-                .get(*selected)
-                .and_then(|i| self.snapshot.panes.get(*i))
-                .map(|p| p.pane_id.clone())
-        } else {
-            None
+        else {
+            return None;
         };
-        self.refilter_session_search(anchor);
+        filtered
+            .get(*selected)
+            .and_then(|i| self.snapshot.panes.get(*i))
+            .map(|p| p.pane_id.clone())
     }
 
     fn refilter_session_search(&mut self, anchor: Option<String>) {
@@ -2462,6 +2467,28 @@ mod tests {
         let mut state = session_search_state(3, 2);
         state.drop_session_search_row();
         assert_eq!(session_search_rows(&state), (vec![0, 1], 1));
+    }
+
+    /// The anchor must be resolved against the pane list `filtered` indexes
+    /// into. Resolving it after the swap re-anchors onto whichever pane
+    /// inherited the old index, silently moving the cursor one row.
+    #[test]
+    fn snapshot_refresh_keeps_the_cursor_on_its_pane_after_a_kill() {
+        let mut state = session_search_state(4, 1);
+        // Kill B: the cursor now points at C (old index 2).
+        state.drop_session_search_row();
+        assert_eq!(session_search_rows(&state), (vec![0, 2, 3], 1));
+
+        // The daemon catches up and drops B from the pane list.
+        let panes: Vec<AgentPane> = ["%0", "%2", "%3"]
+            .iter()
+            .map(|id| pane(id, &format!("/tmp/wt{}", &id[1..])))
+            .collect();
+        state.update_snapshot(snapshot(vec![], panes));
+
+        let (filtered, selected) = session_search_rows(&state);
+        assert_eq!(filtered, vec![0, 1, 2]);
+        assert_eq!(state.snapshot.panes[filtered[selected]].pane_id, "%2");
     }
 
     #[test]

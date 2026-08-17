@@ -53,6 +53,8 @@ Press `Enter` to jump: pertmux switches tmux focus to that pane and points the d
 
 One row is shown per pane running an agent, since that is what `Enter` can switch to.
 
+Press `Delete` to kill the highlighted agent. This runs `tmux kill-pane` on that pane only — the plain shell pane that pertmux opens beside an agent survives, and tmux closes the window if the agent was its last pane. There is no confirmation, and any work the agent had in flight is lost.
+
 ## Session details
 
 When you select an agent pane, the detail panel shows:

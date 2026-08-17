@@ -33,6 +33,15 @@ Action keys can be remapped via the `[keybindings]` section in your config file.
 | `W` | Global worktree search — fuzzy search worktrees across all projects | `worktree_search` |
 | `S` | Global agent session search — fuzzy search agent sessions across all tmux sessions | `session_search` |
 
+## In-popup keys
+
+These are not configurable. Every popup shows its own keys along the bottom edge, so you never have to guess.
+
+| Key | Popup | Action |
+|-----|-------|--------|
+| `↑` / `↓` | Any search popup | Navigate results (`j` / `k` type into the filter box instead) |
+| `Delete` | Session search | Kill the highlighted agent pane. Takes effect immediately — there is no confirmation |
+
 ## Global
 
 | Key | Action |

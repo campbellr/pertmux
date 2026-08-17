@@ -269,8 +269,18 @@ Action keys can be remapped via the `[keybindings]` section in your config file.
 | `d` | Worktree panel | Delete selected worktree |
 | `M` | Worktree panel | Merge selected worktree into default branch |
 | `W` | Global | Fuzzy search worktrees across all projects |
+| `S` | Global | Fuzzy search agent sessions across all tmux sessions |
 | `q`/`Esc` | Global | Quit client (daemon keeps running) |
 | `prefix+a` | tmux | Toggle dashboard popup |
+
+### In-popup keys
+
+Not configurable. Each popup shows its own keys along the bottom edge.
+
+| Key | Popup | Action |
+|-----|-------|--------|
+| `↑`/`↓` | Any search popup | Navigate results |
+| `Delete` | Session search | Kill the highlighted agent pane. No confirmation |
 
 ### Pipeline Visualization
 

@@ -221,6 +221,13 @@ pub(crate) fn draw_popup_client(frame: &mut Frame, state: &ClientState, area: Re
     let _ = show_cursor;
 }
 
+fn divider_line(width: u16) -> Line<'static> {
+    Line::from(Span::styled(
+        "\u{2500}".repeat(width as usize),
+        Style::default().fg(Color::Indexed(236)),
+    ))
+}
+
 fn draw_project_filter_popup(
     frame: &mut Frame,
     input: &str,
@@ -230,7 +237,7 @@ fn draw_project_filter_popup(
 ) {
     let popup_w = 50u16.min(area.width.saturating_sub(4));
     let list_h = filtered.len().clamp(1, 10) as u16;
-    let popup_h = (list_h + 5).min(area.height.saturating_sub(4));
+    let popup_h = (list_h + 6).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
     let rect = Rect::new(x, y, popup_w, popup_h);
@@ -253,6 +260,7 @@ fn draw_project_filter_popup(
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .split(inner);
 
@@ -271,18 +279,15 @@ fn draw_project_filter_popup(
     ]);
     frame.render_widget(Paragraph::new(input_line), chunks[0]);
 
-    let divider = Line::from(Span::styled(
-        "\u{2500}".repeat(inner.width as usize),
-        Style::default().fg(Color::Indexed(236)),
-    ));
-    frame.render_widget(Paragraph::new(divider), chunks[1]);
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[1]);
 
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[3]);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "\u{2191}\u{2193} navigate \u{00b7} Enter switch project \u{00b7} Esc cancel",
             Style::default().fg(Color::DarkGray),
         ))),
-        chunks[3],
+        chunks[4],
     );
 
     let visible_rows = chunks[2].height as usize;
@@ -330,7 +335,7 @@ fn draw_worktree_search_popup(
 ) {
     let popup_w = 90u16.min(area.width.saturating_sub(4));
     let list_h = filtered.len().clamp(1, 16) as u16;
-    let popup_h = (list_h + 5).min(area.height.saturating_sub(4));
+    let popup_h = (list_h + 6).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
     let rect = Rect::new(x, y, popup_w, popup_h);
@@ -353,6 +358,7 @@ fn draw_worktree_search_popup(
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .split(inner);
 
@@ -371,18 +377,15 @@ fn draw_worktree_search_popup(
     ]);
     frame.render_widget(Paragraph::new(input_line), chunks[0]);
 
-    let divider = Line::from(Span::styled(
-        "\u{2500}".repeat(inner.width as usize),
-        Style::default().fg(Color::Indexed(236)),
-    ));
-    frame.render_widget(Paragraph::new(divider), chunks[1]);
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[1]);
 
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[3]);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "\u{2191}\u{2193} navigate \u{00b7} Enter open \u{00b7} Esc cancel",
             Style::default().fg(Color::DarkGray),
         ))),
-        chunks[3],
+        chunks[4],
     );
 
     let visible = chunks[2].height as usize;
@@ -517,7 +520,7 @@ fn draw_session_search_popup(
 ) {
     let popup_w = 90u16.min(area.width.saturating_sub(4));
     let list_h = filtered.len().clamp(1, 16) as u16;
-    let popup_h = (list_h + 5).min(area.height.saturating_sub(4));
+    let popup_h = (list_h + 6).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
     let rect = Rect::new(x, y, popup_w, popup_h);
@@ -540,6 +543,7 @@ fn draw_session_search_popup(
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .split(inner);
 
@@ -558,13 +562,10 @@ fn draw_session_search_popup(
     ]);
     frame.render_widget(Paragraph::new(input_line), chunks[0]);
 
-    let divider = Line::from(Span::styled(
-        "\u{2500}".repeat(inner.width as usize),
-        Style::default().fg(Color::Indexed(236)),
-    ));
-    frame.render_widget(Paragraph::new(divider), chunks[1]);
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[1]);
 
     let dim = Style::default().fg(Color::DarkGray);
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[3]);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -574,7 +575,7 @@ fn draw_session_search_popup(
             Span::styled("Del kill pane", Style::default().fg(Color::Red)),
             Span::styled(" \u{00b7} Esc cancel", dim),
         ])),
-        chunks[3],
+        chunks[4],
     );
 
     let visible = chunks[2].height as usize;
@@ -925,11 +926,7 @@ pub(crate) fn draw_mr_overview_popup(
 
     frame.render_widget(Paragraph::new(item_lines), chunks[0]);
 
-    let divider = Line::from(Span::styled(
-        "\u{2500}".repeat(inner.width as usize),
-        Style::default().fg(Color::Indexed(236)),
-    ));
-    frame.render_widget(Paragraph::new(divider), chunks[1]);
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[1]);
 
     let help = Line::from(Span::styled(
         "Enter open/go to \u{00b7} Esc close",
@@ -1046,11 +1043,7 @@ fn draw_activity_feed_popup(frame: &mut Frame, state: &ClientState, selected: us
 
     frame.render_widget(Paragraph::new(item_lines), chunks[0]);
 
-    let divider = Line::from(Span::styled(
-        "\u{2500}".repeat(inner.width as usize),
-        Style::default().fg(Color::Indexed(236)),
-    ));
-    frame.render_widget(Paragraph::new(divider), chunks[1]);
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[1]);
 
     let help = Line::from(Span::styled(
         "j/k navigate \u{00b7} Enter go to \u{00b7} Esc close",
@@ -1322,11 +1315,7 @@ fn draw_keybindings_popup(frame: &mut Frame, state: &ClientState, area: Rect) {
 
     frame.render_widget(Paragraph::new(lines), chunks[0]);
 
-    let divider = Line::from(Span::styled(
-        "\u{2500}".repeat(inner.width as usize),
-        Style::default().fg(Color::Indexed(236)),
-    ));
-    frame.render_widget(Paragraph::new(divider), chunks[1]);
+    frame.render_widget(Paragraph::new(divider_line(inner.width)), chunks[1]);
 
     let help = Line::from(Span::styled(
         "Esc close",

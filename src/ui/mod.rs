@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 mod components;
-mod helpers;
+pub(crate) mod helpers;
 
 pub(crate) const ACCENT: Color = Color::Rgb(255, 140, 0);
 /// Dim foreground for zero-valued counts and inactive labels (xterm-256 grey).

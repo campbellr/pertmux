@@ -7,6 +7,7 @@ use crate::protocol::{ClientMsg, DaemonMsg, DashboardSnapshot, PROTOCOL_VERSION,
 use crate::tmux;
 use crate::types::AgentPane;
 use crate::ui;
+use crate::ui::helpers::truncate;
 use anyhow::Result;
 use bytes::Bytes;
 use crossterm::{
@@ -878,6 +879,19 @@ impl ClientState {
         }
     }
 
+    /// Drop the highlighted row after its pane is killed, so the list updates
+    /// immediately rather than waiting up to 2s for the next snapshot.
+    fn drop_session_search_row(&mut self) {
+        if let PopupState::SessionSearch {
+            filtered, selected, ..
+        } = &mut self.popup
+            && *selected < filtered.len()
+        {
+            filtered.remove(*selected);
+            *selected = (*selected).min(filtered.len().saturating_sub(1));
+        }
+    }
+
     /// Point the dashboard at whichever card owns `pane`: the MR whose linked
     /// pane it is, else the worktree living at its path.
     fn focus_pane_in_dashboard(&mut self, pane_idx: usize) {
@@ -1495,6 +1509,28 @@ async fn handle_key(
                     && *selected > 0
                 {
                     *selected -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                let target = if let PopupState::SessionSearch {
+                    filtered, selected, ..
+                } = &state.popup
+                {
+                    filtered
+                        .get(*selected)
+                        .and_then(|i| state.snapshot.panes.get(*i))
+                        .map(|p| (p.pane_id.clone(), p.display_title().to_string()))
+                } else {
+                    None
+                };
+                if let Some((pane_id, title)) = target {
+                    match tmux::kill_pane(&pane_id) {
+                        Ok(()) => {
+                            state.drop_session_search_row();
+                            state.notify(format!("Killed {}", truncate(&title, 40)));
+                        }
+                        Err(e) => state.notify(format!("Kill failed: {}", e)),
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -2390,5 +2426,52 @@ mod tests {
         let p = pane("%7", "/nonexistent-abc");
         let snap = snapshot(vec![project("pertmux", vec![], vec![])], vec![p.clone()]);
         assert_eq!(locate_pane(&snap, &p), None);
+    }
+
+    fn session_search_state(n: usize, selected: usize) -> super::ClientState {
+        let panes: Vec<AgentPane> = (0..n)
+            .map(|i| pane(&format!("%{}", i), &format!("/tmp/wt{}", i)))
+            .collect();
+        let mut state = super::ClientState::from_snapshot(snapshot(vec![], panes));
+        state.popup = crate::app::PopupState::SessionSearch {
+            input: String::new(),
+            filtered: (0..n).collect(),
+            selected,
+        };
+        state
+    }
+
+    fn session_search_rows(state: &super::ClientState) -> (Vec<usize>, usize) {
+        match &state.popup {
+            crate::app::PopupState::SessionSearch {
+                filtered, selected, ..
+            } => (filtered.clone(), *selected),
+            _ => panic!("expected a SessionSearch popup"),
+        }
+    }
+
+    #[test]
+    fn drop_session_search_row_removes_the_highlighted_row() {
+        let mut state = session_search_state(3, 1);
+        state.drop_session_search_row();
+        assert_eq!(session_search_rows(&state), (vec![0, 2], 1));
+    }
+
+    #[test]
+    fn drop_session_search_row_clamps_on_the_last_row() {
+        let mut state = session_search_state(3, 2);
+        state.drop_session_search_row();
+        assert_eq!(session_search_rows(&state), (vec![0, 1], 1));
+    }
+
+    #[test]
+    fn drop_session_search_row_handles_the_final_row() {
+        let mut state = session_search_state(1, 0);
+        state.drop_session_search_row();
+        assert_eq!(session_search_rows(&state), (vec![], 0));
+
+        // Killing again is a no-op rather than a panic.
+        state.drop_session_search_row();
+        assert_eq!(session_search_rows(&state), (vec![], 0));
     }
 }

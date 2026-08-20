@@ -807,9 +807,14 @@ impl ClientState {
     /// Flatten every agent pane into (pane_idx, haystack) entries. The haystack
     /// includes the tmux session name and the pane directory so a session can be
     /// found by title, by tmux session, or by worktree name.
+    ///
+    /// Ordered by last agent activity, newest first, with panes of unknown
+    /// activity last — the tmux pane order the daemon reports interleaves two
+    /// discovery passes and is not meaningful. A non-empty query re-sorts by
+    /// fuzzy score; this order survives as the tie-break within equal scores.
     fn session_search_entries(&self) -> Vec<(usize, String)> {
-        self.snapshot
-            .panes
+        let panes = &self.snapshot.panes;
+        let mut entries: Vec<(usize, String)> = panes
             .iter()
             .enumerate()
             .map(|(i, pane)| {
@@ -822,7 +827,18 @@ impl ClientState {
                     format!("{}/{} {}", pane.session_name, pane.display_title(), dir),
                 )
             })
-            .collect()
+            .collect();
+        entries.sort_by(|a, b| {
+            let (pa, pb) = (&panes[a.0], &panes[b.0]);
+            pb.last_activity.cmp(&pa.last_activity).then_with(|| {
+                (&pa.session_name, pa.window_index, pa.pane_index).cmp(&(
+                    &pb.session_name,
+                    pb.window_index,
+                    pb.pane_index,
+                ))
+            })
+        });
+        entries
     }
 
     fn open_session_search(&mut self) {
@@ -2489,6 +2505,22 @@ mod tests {
         let (filtered, selected) = session_search_rows(&state);
         assert_eq!(filtered, vec![0, 1, 2]);
         assert_eq!(state.snapshot.panes[filtered[selected]].pane_id, "%2");
+    }
+
+    #[test]
+    fn session_search_orders_by_last_activity() {
+        let ts = |ms| jiff::Timestamp::from_millisecond(ms).unwrap();
+        let mut old = pane("%0", "/tmp/wt0");
+        old.last_activity = Some(ts(1_762_000_000_000));
+        let unknown = pane("%1", "/tmp/wt1");
+        let mut new = pane("%2", "/tmp/wt2");
+        new.last_activity = Some(ts(1_763_000_000_000));
+
+        let mut state =
+            super::ClientState::from_snapshot(snapshot(vec![], vec![old, unknown, new]));
+        state.open_session_search();
+
+        assert_eq!(session_search_rows(&state), (vec![2, 0, 1], 0));
     }
 
     #[test]

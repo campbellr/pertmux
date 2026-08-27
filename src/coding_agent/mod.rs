@@ -25,6 +25,9 @@ pub trait CodingAgent {
     /// Accepts a pre-refreshed `&System` and `&ListenerMap` for agents that
     /// need process-tree inspection or port discovery (e.g. opencode). Agents
     /// that don't need them can ignore the parameters.
+    ///
+    /// Called after `enrich_pane`, so agent-specific metadata (e.g.
+    /// `pane.db_session_id`) is already populated.
     fn query_status(&self, pane: &AgentPane, sys: &System, listeners: &ListenerMap) -> PaneStatus;
 
     /// Send a prompt to the coding agent.
@@ -39,10 +42,11 @@ pub trait CodingAgent {
     ///
     /// Implementations may also set `pane.status` here if determining status
     /// shares the same data source as enrichment (e.g. reading a transcript
-    /// file once for both). In that case, `query_status` should return
-    /// `PaneStatus::Unknown` and document that status is set by `enrich_pane`.
+    /// file once for both). In that case, `query_status` should return the
+    /// already-set `pane.status`.
     ///
-    /// The caller always invokes `enrich_pane` immediately after `query_status`.
+    /// The caller always invokes `enrich_pane` immediately before
+    /// `query_status`.
     fn enrich_pane(&self, _pane: &mut AgentPane) {}
 
     fn fetch_session_detail(&self, _session_id: &str) -> Option<SessionDetail> {

@@ -305,8 +305,8 @@ impl App {
 
         for pane in &mut panes {
             if let Some(agent) = self.find_agent(&pane.pane_command) {
-                pane.status = agent.query_status(pane, &sys, &listeners);
                 agent.enrich_pane(pane);
+                pane.status = agent.query_status(pane, &sys, &listeners);
             }
         }
 

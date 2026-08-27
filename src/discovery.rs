@@ -33,15 +33,41 @@ pub fn build_listener_map() -> ListenerMap {
     map
 }
 
-/// Discover the HTTP port for an opencode instance given the pane's PID.
+/// How to reach an opencode instance's HTTP API.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Endpoint {
+    /// Standalone instance listening on a local port (started with `--port 0`).
+    Local(u16),
+    /// Attach client of a shared server; base URL parsed from its argv
+    /// (`opencode attach <url> ...`).
+    Attached(String),
+}
+
+impl Endpoint {
+    /// Base URL for API requests, without a trailing slash.
+    pub fn base_url(&self) -> String {
+        match self {
+            Endpoint::Local(port) => format!("http://127.0.0.1:{}", port),
+            Endpoint::Attached(url) => url.trim_end_matches('/').to_string(),
+        }
+    }
+}
+
+/// Discover the HTTP endpoint for an opencode instance given the pane's PID.
 ///
-/// Walks the process tree from the shell PID to find the opencode process,
-/// then checks it and its children for a TCP listener.
+/// Walks the process tree from the shell PID to find the opencode process.
+/// If it is an `opencode attach <url>` client (no listener of its own), the
+/// shared server URL is taken from its argv; otherwise it and its children
+/// are checked for a TCP listener.
 ///
 /// Accepts a pre-refreshed `&System` and pre-built `&ListenerMap` to avoid
 /// redundant `/proc` scans — the caller is expected to build both once per tick.
-pub fn discover_port(sys: &System, listeners: &ListenerMap, pane_pid: u32) -> Option<u16> {
+pub fn discover_endpoint(sys: &System, listeners: &ListenerMap, pane_pid: u32) -> Option<Endpoint> {
     let opencode_pid = find_opencode_pid(sys, pane_pid)?;
+
+    if let Some(url) = attach_url(sys, opencode_pid) {
+        return Some(Endpoint::Attached(url));
+    }
 
     // Collect opencode PID + all its children (the HTTP server may run in a child worker).
     let mut candidate_pids = vec![opencode_pid];
@@ -50,6 +76,32 @@ pub fn discover_port(sys: &System, listeners: &ListenerMap, pane_pid: u32) -> Op
     candidate_pids
         .iter()
         .find_map(|pid| listeners.get(pid).copied())
+        .map(Endpoint::Local)
+}
+
+/// Extract the server URL from an `opencode attach <url>` client's argv.
+fn attach_url(sys: &System, pid: u32) -> Option<String> {
+    let proc_ = sys.process(Pid::from_u32(pid))?;
+    let args: Vec<String> = proc_
+        .cmd()
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    attach_url_from_args(&args)
+}
+
+/// Parse the server URL out of argv like
+/// `["/path/to/opencode", "attach", "http://127.0.0.1:4599", "--dir", ...]`.
+///
+/// `attach` must be the subcommand (first non-flag argument), not just any
+/// argv word — `opencode run attach http://x ...` is a prompt, not a client.
+fn attach_url_from_args(args: &[String]) -> Option<String> {
+    let mut rest = args.iter().skip(1).skip_while(|a| a.starts_with('-'));
+    if rest.next().map(String::as_str) != Some("attach") {
+        return None;
+    }
+    rest.find(|a| a.starts_with("http://") || a.starts_with("https://"))
+        .cloned()
 }
 
 /// Find the opencode process in the tree rooted at `shell_pid`.
@@ -110,4 +162,101 @@ fn find_child_pids(sys: &System, parent_pid: u32) -> Vec<u32> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn attach_url_parsed_from_argv() {
+        let a = args(&[
+            "/home/u/.opencode/bin/opencode",
+            "attach",
+            "http://127.0.0.1:4599",
+            "--dir",
+            "/tmp/proj",
+        ]);
+        assert_eq!(
+            attach_url_from_args(&a),
+            Some("http://127.0.0.1:4599".to_string())
+        );
+    }
+
+    #[test]
+    fn attach_url_skips_non_url_flags() {
+        let a = args(&["opencode", "attach", "--mini", "https://oc.example:4096"]);
+        assert_eq!(
+            attach_url_from_args(&a),
+            Some("https://oc.example:4096".to_string())
+        );
+    }
+
+    #[test]
+    fn no_attach_subcommand() {
+        assert_eq!(
+            attach_url_from_args(&args(&["opencode", "--port", "0"])),
+            None
+        );
+        assert_eq!(attach_url_from_args(&args(&["opencode"])), None);
+        assert_eq!(attach_url_from_args(&args(&[])), None);
+    }
+
+    #[test]
+    fn attach_without_url() {
+        assert_eq!(attach_url_from_args(&args(&["opencode", "attach"])), None);
+    }
+
+    #[test]
+    fn attach_as_prompt_word_not_confused() {
+        // `attach` appearing as a prompt word must not classify the pane as
+        // an attach client (and must not leak traffic to the URL).
+        assert_eq!(
+            attach_url_from_args(&args(&[
+                "opencode",
+                "run",
+                "attach",
+                "http://example.com",
+                "and",
+                "summarize"
+            ])),
+            None
+        );
+    }
+
+    #[test]
+    fn attach_after_global_flags() {
+        assert_eq!(
+            attach_url_from_args(&args(&[
+                "opencode",
+                "--print-logs",
+                "attach",
+                "http://127.0.0.1:4599"
+            ])),
+            Some("http://127.0.0.1:4599".to_string())
+        );
+    }
+
+    #[test]
+    fn attach_in_project_path_not_confused() {
+        // A standalone TUI opened on a directory literally named "attach"
+        // must not be treated as an attach client.
+        assert_eq!(
+            attach_url_from_args(&args(&["opencode", "/home/u/attach"])),
+            None
+        );
+    }
+
+    #[test]
+    fn endpoint_base_url() {
+        assert_eq!(Endpoint::Local(1234).base_url(), "http://127.0.0.1:1234");
+        assert_eq!(
+            Endpoint::Attached("http://127.0.0.1:4599/".into()).base_url(),
+            "http://127.0.0.1:4599"
+        );
+    }
 }

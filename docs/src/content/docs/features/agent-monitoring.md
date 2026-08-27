@@ -9,7 +9,7 @@ pertmux detects and monitors AI coding agent instances running in tmux panes acr
 
 pertmux supports two coding agents:
 
-- **[opencode](https://github.com/sst/opencode)** — must be started with `--port 0` so pertmux can query its local HTTP server. Status is detected via HTTP API.
+- **[opencode](https://github.com/sst/opencode)** — must be started with `--port 0`, or as an `opencode attach` client of a shared server, so pertmux can query its HTTP API. Status is detected via HTTP API.
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — requires no special flags. Status is detected by reading JSONL transcript files from `~/.claude/`.
 
 See [Agent Configuration](/configuration/agent-config/) for setup details.

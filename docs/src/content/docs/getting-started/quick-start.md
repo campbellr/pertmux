@@ -45,7 +45,7 @@ pertmux connect
 You should see your open MRs/PRs, linked worktrees, and any active coding agents.
 
 :::note[Coding agent monitoring]
-pertmux can monitor [opencode](https://github.com/sst/opencode) instances running in your tmux panes (currently the only supported agent). opencode must be started with `--port 0` so pertmux can query its local server. See [Agent Configuration](/configuration/agent-config/) for setup details.
+pertmux can monitor [opencode](https://github.com/sst/opencode) instances running in your tmux panes (currently the only supported agent). opencode must be started with `--port 0` (or as an `opencode attach` client of a shared server) so pertmux can query its HTTP API. See [Agent Configuration](/configuration/agent-config/) for setup details.
 
 If you just want agent monitoring without forge integration, skip steps 1-2 — pertmux will auto-discover opencode instances in your tmux panes.
 :::

@@ -32,4 +32,4 @@ pertmux is fully open source. You can audit every network call in the codebase:
 
 - Forge API calls: `src/forge_clients/gitlab/client.rs` and `src/forge_clients/github/client.rs`
 - Agent API calls: `src/coding_agent/opencode.rs`
-- Port discovery: `src/discovery.rs` (local process inspection only)
+- Endpoint discovery: `src/discovery.rs` (local process inspection only). For `opencode attach` clients, the server URL is taken from the client's own command line and may point at a non-local host; pertmux sends status queries and prompts to that URL.

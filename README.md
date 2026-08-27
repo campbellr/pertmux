@@ -140,10 +140,12 @@ username = "youruser"
 
 pertmux supports two coding agents: [opencode](https://github.com/sst/opencode) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Enable one or both in your config.
 
-**opencode** must be started with `--port 0` so pertmux can query its local HTTP server for session status:
+**opencode** must expose an HTTP server pertmux can query for session status — either standalone with `--port 0` (local server on a random port), or as an attach client of a shared server (pertmux reads the URL from `opencode attach <url>`):
 
 ```bash
 opencode --port 0
+# or
+opencode attach http://127.0.0.1:4096 --dir "$PWD"
 ```
 
 ```toml

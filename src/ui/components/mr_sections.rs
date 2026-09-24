@@ -18,30 +18,29 @@ use ratatui::{
 const CARD_H: u16 = 4;
 /// Border rows consumed by a section's surrounding block.
 const CHROME_H: u16 = 2;
-/// A section never shrinks below one full card plus its borders.
-const MIN_SECTION_H: u16 = CARD_H + CHROME_H;
 
 /// Split the list panel between the worktree and MR sections.
 ///
-/// Purely proportional sizing starves the MR section on repos with many
-/// worktrees (mainapi: 20+ worktrees vs 2 MRs => MRs got ~8% of the height),
-/// so each section keeps room for at least one card.
+/// Each section gets what it needs up to half the height; whatever it
+/// doesn't use goes to the other. Only when both overflow is the height
+/// split evenly. Proportional sizing let 20+ worktrees squeeze 2 MRs into
+/// ~8% of the panel.
 fn section_heights(total: u16, wt_count: u16, mr_count: u16) -> (u16, u16) {
-    if total == 0 {
-        return (0, 0);
-    }
     let want = |n: u16| n.max(1).saturating_mul(CARD_H).saturating_add(CHROME_H);
     let (wt_want, mr_want) = (want(wt_count), want(mr_count));
+    let half = total / 2;
 
-    if wt_want.saturating_add(mr_want) <= total {
-        // Everything fits; the surplus goes to the worktree section.
-        return (total - mr_want, mr_want);
+    if wt_want.saturating_add(mr_want) <= total || mr_want <= half {
+        (total - mr_want, mr_want)
+    } else if wt_want <= half {
+        (wt_want, total - wt_want)
+    } else {
+        // Round worktrees down to whole cards so the partial-card rows all
+        // land in one section instead of being wasted in both.
+        let cards = half.saturating_sub(CHROME_H) / CARD_H;
+        let wt = (cards * CARD_H + CHROME_H).min(half);
+        (wt, total - wt)
     }
-
-    let floor = MIN_SECTION_H.min(total / 2);
-    let wt = ((total as u32 * wt_want as u32) / (wt_want as u32 + mr_want as u32)) as u16;
-    let wt = wt.clamp(floor, total.saturating_sub(floor));
-    (wt, total - wt)
 }
 
 pub(crate) fn draw_mr_sections_render(frame: &mut Frame, proj: &ProjectRenderData<'_>, area: Rect) {
@@ -245,7 +244,7 @@ fn draw_worktree_block_render(
 
 #[cfg(test)]
 mod tests {
-    use super::{CHROME_H, MIN_SECTION_H, section_heights};
+    use super::{CARD_H, CHROME_H, section_heights};
 
     #[test]
     fn both_sections_fit_exactly() {
@@ -259,26 +258,27 @@ mod tests {
     }
 
     #[test]
-    fn many_worktrees_leave_room_for_mrs() {
-        // The regression: 22 worktrees vs 2 MRs used to leave the MR section
-        // with ~8% of the height.
-        let (wt, mr) = section_heights(40, 22, 2);
-        assert_eq!(wt + mr, 40);
-        assert!(mr >= MIN_SECTION_H, "mr section starved: {mr}");
-        assert!(wt >= MIN_SECTION_H, "worktree section starved: {wt}");
+    fn small_mr_list_leaves_the_rest_to_worktrees() {
+        // 22 worktrees vs 2 MRs: MRs show in full, worktrees get the rest.
+        assert_eq!(section_heights(40, 22, 2), (30, 10));
     }
 
     #[test]
-    fn many_mrs_leave_room_for_worktrees() {
-        let (wt, mr) = section_heights(40, 1, 30);
-        assert_eq!(wt + mr, 40);
-        assert!(wt >= MIN_SECTION_H, "worktree section starved: {wt}");
+    fn small_worktree_list_leaves_the_rest_to_mrs() {
+        assert_eq!(section_heights(40, 1, 30), (6, 34));
     }
 
     #[test]
-    fn floor_guarantees_one_visible_card() {
-        let (wt, mr) = section_heights(40, 22, 2);
-        assert!(wt - CHROME_H >= 4 && mr - CHROME_H >= 4);
+    fn no_mrs_leaves_the_rest_to_worktrees() {
+        assert_eq!(section_heights(40, 22, 0), (34, 6));
+    }
+
+    #[test]
+    fn both_overflowing_split_evenly_in_whole_cards() {
+        // half = 20 -> 18 inner rows -> 4 cards -> 18; MRs get the other 22.
+        assert_eq!(section_heights(40, 22, 30), (18, 22));
+        // Odd totals: the partial-card rows all go to the MR section.
+        assert_eq!(section_heights(41, 22, 30), (18, 23));
     }
 
     #[test]
@@ -289,8 +289,10 @@ mod tests {
 
     #[test]
     fn degrades_without_panicking_on_tiny_areas() {
-        for total in 0..=MIN_SECTION_H * 2 {
+        for total in 0..=(CARD_H + CHROME_H) * 2 {
             let (wt, mr) = section_heights(total, 22, 2);
+            assert_eq!(wt + mr, total, "total {total}");
+            let (wt, mr) = section_heights(total, 22, 30);
             assert_eq!(wt + mr, total, "total {total}");
         }
     }

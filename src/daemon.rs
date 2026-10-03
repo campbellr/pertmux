@@ -270,6 +270,11 @@ pub async fn run(config: Config) -> Result<()> {
                         broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
                         info!("cmd: SelectMr done in {:.2?}", t.elapsed());
                     }
+                    ClientMsg::SelectPane { pane_id } => {
+                        info!("cmd: SelectPane pane_id={}", pane_id);
+                        app.select_pane(pane_id);
+                        broadcast_snapshot(&broadcast_tx, &latest_snapshot, &mut app).await;
+                    }
                     ClientMsg::Handshake { .. } => {}
                 }
             }

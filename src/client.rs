@@ -404,6 +404,15 @@ impl ClientState {
             .map(|l| l.mr.iid)
     }
 
+    /// The highlighted pane in the agent-only pane list.
+    pub(crate) fn selected_pane(&self) -> Option<&AgentPane> {
+        self.snapshot.panes.get(self.selected)
+    }
+
+    fn selected_pane_id(&self) -> Option<String> {
+        self.selected_pane().map(|p| p.pane_id.clone())
+    }
+
     fn open_selected_mr_in_browser(&self) {
         if let Some(proj) = self.snapshot.projects.get(self.active_project)
             && let Some(linked) = proj
@@ -1028,6 +1037,8 @@ pub async fn run() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = ClientState::from_snapshot(initial_snapshot);
+    // The daemon may still hold another client's selection.
+    maybe_send_select_pane(&state, &mut framed, None).await?;
     let result = run_client_loop(&mut terminal, &mut state, &mut framed).await;
 
     if let Some(proj) = state.snapshot.projects.get(state.active_project) {
@@ -1877,13 +1888,17 @@ async fn handle_key(
         KeyCode::Char('q') | KeyCode::Esc => state.running = false,
         KeyCode::Up | KeyCode::Char('k') => {
             let before = state.current_mr_iid();
+            let pane_before = state.selected_pane_id();
             state.move_up();
             maybe_send_select_mr(state, framed, before).await?;
+            maybe_send_select_pane(state, framed, pane_before).await?;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             let before = state.current_mr_iid();
+            let pane_before = state.selected_pane_id();
             state.move_down();
             maybe_send_select_mr(state, framed, before).await?;
+            maybe_send_select_pane(state, framed, pane_before).await?;
         }
         KeyCode::Tab => {
             let before = state.current_mr_iid();
@@ -2055,6 +2070,20 @@ async fn maybe_send_select_mr(
     Ok(())
 }
 
+async fn maybe_send_select_pane(
+    state: &ClientState,
+    framed: &mut Framed<UnixStream, LengthDelimitedCodec>,
+    before: Option<String>,
+) -> Result<()> {
+    let after = state.selected_pane_id();
+    if after != before
+        && let Some(pane_id) = after
+    {
+        send_msg(framed, ClientMsg::SelectPane { pane_id }).await?;
+    }
+    Ok(())
+}
+
 fn focus_selected(state: &ClientState) -> Result<()> {
     if let Some(proj) = state.snapshot.projects.get(state.active_project) {
         match state
@@ -2088,7 +2117,7 @@ fn focus_selected(state: &ClientState) -> Result<()> {
                 }
             }
         }
-    } else if let Some(pane) = state.snapshot.panes.get(state.selected) {
+    } else if let Some(pane) = state.selected_pane() {
         tmux::switch_to_pane(&pane.pane_id)?;
     }
     Ok(())

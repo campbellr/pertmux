@@ -120,7 +120,9 @@ pub struct ProjectState {
 
 pub struct App {
     pub panes: Vec<AgentPane>,
-    pub selected: usize,
+    /// `pane_id` of the pane `detail` describes. Falls back to the first pane
+    /// when unset or gone.
+    pub selected_pane: Option<String>,
     #[allow(dead_code)]
     pub running: bool,
     pub last_refresh: Instant,
@@ -218,7 +220,7 @@ impl App {
 
         Self {
             panes: Vec::new(),
-            selected: 0,
+            selected_pane: None,
             running: true,
             last_refresh: Instant::now() - Duration::from_secs(10),
             refresh_interval: Duration::from_secs(config.refresh_interval),
@@ -346,10 +348,6 @@ impl App {
 
         self.build_groups(&panes);
         self.panes = panes;
-
-        if self.selected >= self.panes.len() && !self.panes.is_empty() {
-            self.selected = self.panes.len() - 1;
-        }
 
         self.update_detail();
 
@@ -921,8 +919,17 @@ impl App {
         std::mem::take(&mut self.pending_agent_changes)
     }
 
+    pub fn select_pane(&mut self, pane_id: String) {
+        self.selected_pane = Some(pane_id);
+        self.update_detail();
+    }
+
     fn update_detail(&mut self) {
-        self.detail = self.panes.get(self.selected).and_then(|pane| {
+        let selected = self
+            .selected_pane
+            .as_deref()
+            .and_then(|id| self.panes.iter().find(|p| p.pane_id == id));
+        self.detail = selected.or(self.panes.first()).and_then(|pane| {
             let session_id = pane.db_session_id.as_deref()?;
             let agent = self.find_agent(&pane.pane_command)?;
             agent.fetch_session_detail(session_id)
@@ -1126,5 +1133,60 @@ mod tests {
         let old = vec![mr(1, Some("mergeable"), Some(true))];
         let new = vec![mr(1, Some("mergeable"), Some(true))];
         assert_eq!(approved_changes(&old, &new), 0);
+    }
+
+    struct FakeAgent;
+
+    impl CodingAgent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn process_name(&self) -> &str {
+            "fake"
+        }
+        fn query_status(&self, _pane: &AgentPane) -> PaneStatus {
+            PaneStatus::Idle
+        }
+        fn send_prompt(&self, _: u32, _: &str, _: &str) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+        fn fetch_session_detail(&self, session_id: &str) -> Option<SessionDetail> {
+            Some(SessionDetail {
+                session_id: session_id.to_string(),
+                ..SessionDetail::default()
+            })
+        }
+    }
+
+    fn agent_pane(pane_id: &str, session_id: &str) -> AgentPane {
+        serde_json::from_value(serde_json::json!({
+            "pane_id": pane_id, "session_name": "s", "window_index": 0, "pane_index": 0,
+            "pane_title": "", "pane_path": "/", "pane_pid": 0, "pane_command": "fake",
+            "status": "Idle", "db_session_title": null, "agent": null, "model": null,
+            "last_activity": null, "db_session_id": session_id, "last_response": null,
+        }))
+        .unwrap()
+    }
+
+    fn detail_session(app: &App) -> Option<&str> {
+        app.detail.as_ref().map(|d| d.session_id.as_str())
+    }
+
+    #[test]
+    fn detail_follows_selected_pane() {
+        let mut app = App::new(Config::default());
+        app.agents = vec![Box::new(FakeAgent)];
+        app.panes = vec![agent_pane("%1", "ses_a"), agent_pane("%2", "ses_b")];
+
+        app.update_detail();
+        assert_eq!(detail_session(&app), Some("ses_a"));
+
+        app.select_pane("%2".to_string());
+        assert_eq!(detail_session(&app), Some("ses_b"));
+
+        // The selected pane closed.
+        app.panes.remove(1);
+        app.update_detail();
+        assert_eq!(detail_session(&app), Some("ses_a"));
     }
 }

@@ -123,7 +123,7 @@ impl From<&crate::mr_changes::MrChange> for ActivityEntry {
 }
 
 #[allow(dead_code)]
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +205,11 @@ pub enum ClientMsg {
     SelectMr {
         project_idx: usize,
         mr_iid: u64,
+    },
+    /// Selects the agent pane whose session `DashboardSnapshot::detail`
+    /// describes.
+    SelectPane {
+        pane_id: String,
     },
     CreateWorktree {
         project_idx: usize,

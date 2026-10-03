@@ -37,7 +37,8 @@ pub(crate) fn draw_detail_panel_client(frame: &mut Frame, state: &ClientState, a
         return;
     }
 
-    let panel_title = if let Some(pane) = state.snapshot.panes.get(state.selected) {
+    let pane = state.selected_pane();
+    let panel_title = if let Some(pane) = pane {
         format!(
             " {} \u{2014} {}:{}.{} ",
             pane.display_title(),
@@ -64,7 +65,12 @@ pub(crate) fn draw_detail_panel_client(frame: &mut Frame, state: &ClientState, a
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(detail) = &state.snapshot.detail else {
+    // The daemon's selection can lag this client's or belong to another
+    // client.
+    let detail = state.snapshot.detail.as_ref().filter(|detail| {
+        pane.and_then(|p| p.db_session_id.as_deref()) == Some(detail.session_id.as_str())
+    });
+    let Some(detail) = detail else {
         let msg = Paragraph::new(Span::styled(
             "  No session data available.",
             Style::default().fg(Color::DarkGray),

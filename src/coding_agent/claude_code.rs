@@ -67,12 +67,7 @@ impl CodingAgent for ClaudeCode {
         }
     }
 
-    fn query_status(
-        &self,
-        pane: &AgentPane,
-        _sys: &sysinfo::System,
-        _listeners: &crate::discovery::ListenerMap,
-    ) -> PaneStatus {
+    fn query_status(&self, pane: &AgentPane) -> PaneStatus {
         // Status is determined in enrich_pane() to avoid a double file read.
         // The caller calls enrich_pane() before query_status(), which sets
         // pane.status from the same transcript read used for enrichment.

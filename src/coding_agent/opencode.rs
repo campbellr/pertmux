@@ -1,21 +1,38 @@
 use super::CodingAgent;
-use crate::discovery::{self, Endpoint, ListenerMap};
-use crate::types::{AgentPane, PaneStatus, SessionDetail};
+use crate::types::{AgentPane, MessageSummary, PaneStatus, SessionDetail};
+use anyhow::Context;
+use base64::Engine;
+use jiff::Timestamp;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::time::Duration;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use serde::de::{DeserializeOwned, IgnoredAny};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
+const TIMEOUT: Duration = Duration::from_secs(1);
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+/// Shorter than the default 2s refresh interval.
+const ACTIVE_TTL: Duration = Duration::from_secs(1);
+
+/// Talks to the opencode background service that every opencode TUI on the
+/// machine connects to.
 pub struct OpenCode {
-    db_path: Option<String>,
     /// Reusable HTTP agent for status queries (short timeout).
     status_agent: ureq::Agent,
     /// Reusable HTTP agent for sending prompts (longer timeout).
     send_agent: ureq::Agent,
+    /// Latest assistant reply per session id, with the session's
+    /// `time.updated` it was read at. Messages are only refetched after the
+    /// session changes.
+    last_responses: RefCell<HashMap<String, (i64, Option<String>)>>,
+    /// Running session ids, or `None` if the service couldn't be reached,
+    /// with when they were fetched. Shared by every pane in one refresh.
+    active: RefCell<Option<(Instant, Option<HashSet<String>>)>>,
 }
 
 impl OpenCode {
-    pub fn new(db_path: Option<String>) -> Self {
+    pub fn new() -> Self {
         // timeout_global is the catch-all: it bounds the entire request,
         // including waiting for the response status/headers. Without it, an
         // opencode that accepts the TCP connection but never replies leaves the
@@ -38,29 +55,67 @@ impl OpenCode {
                 .build(),
         );
         Self {
-            db_path,
             status_agent,
             send_agent,
+            last_responses: RefCell::new(HashMap::new()),
+            active: RefCell::new(None),
         }
     }
+
+    /// Whether the session is running, or `None` if unknown.
+    fn is_active(&self, session_id: &str) -> Option<bool> {
+        let fresh = matches!(&*self.active.borrow(), Some((at, _)) if at.elapsed() < ACTIVE_TTL);
+        if !fresh {
+            // Only running sessions are listed. opencode doesn't expose retries.
+            let active = Service::discover()
+                .and_then(|s| {
+                    s.get::<HashMap<String, IgnoredAny>>(
+                        &self.status_agent,
+                        "/api/session/active",
+                        &[],
+                    )
+                })
+                .ok()
+                .map(|map| map.into_keys().collect());
+            *self.active.borrow_mut() = Some((Instant::now(), active));
+        }
+        let active = self.active.borrow();
+        let (_, ids) = active.as_ref()?;
+        ids.as_ref().map(|ids| ids.contains(session_id))
+    }
+
+    /// The text of the session's latest assistant reply, if any.
+    ///
+    /// A busy session's latest messages can all be tool calls, so the
+    /// previous reply is kept until a newer one shows up rather than
+    /// flickering to `None`.
+    fn last_response(&self, service: &Service, session: &Session) -> Option<String> {
+        let previous = match self.last_responses.borrow().get(&session.id) {
+            Some((updated, text)) if *updated == session.time.updated => return text.clone(),
+            Some((_, text)) => text.clone(),
+            None => None,
+        };
+        let Ok(messages) = service.get::<Vec<Message>>(
+            &self.status_agent,
+            &format!("/api/session/{}/message", session.id),
+            &[("order", "desc"), ("limit", "20")],
+        ) else {
+            return previous;
+        };
+        let text = messages
+            .iter()
+            .find_map(|m| match m {
+                Message::Assistant { content, .. } => last_text(content),
+                _ => None,
+            })
+            .map(|t| t.chars().take(200).collect())
+            .or(previous);
+        self.last_responses
+            .borrow_mut()
+            .insert(session.id.clone(), (session.time.updated, text.clone()));
+        text
+    }
 }
-
-// ─── Opencode-specific API types ─────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct SessionStatus {
-    #[serde(rename = "type")]
-    status_type: String,
-    attempt: Option<u32>,
-    message: Option<String>,
-}
-
-type SessionStatusMap = HashMap<String, SessionStatus>;
-
-// ─── Trait implementation ────────────────────────────────────────────────────
-
-const TIMEOUT: Duration = Duration::from_secs(1);
-const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl CodingAgent for OpenCode {
     fn name(&self) -> &str {
@@ -71,194 +126,491 @@ impl CodingAgent for OpenCode {
         "opencode"
     }
 
-    fn query_status(&self, pane: &AgentPane, sys: &System, listeners: &ListenerMap) -> PaneStatus {
-        let Some(endpoint) = discovery::discover_endpoint(sys, listeners, pane.pane_pid) else {
+    fn query_status(&self, pane: &AgentPane) -> PaneStatus {
+        let Some(id) = pane.db_session_id.as_deref() else {
             return PaneStatus::Unknown;
         };
-
-        let Some(map) =
-            get_session_status(&self.status_agent, &endpoint.base_url(), &pane.pane_path)
-        else {
-            return PaneStatus::Unknown;
-        };
-
-        status_for_pane(&map, pane.db_session_id.as_deref(), &endpoint)
-    }
-
-    fn send_prompt(&self, pane_pid: u32, session_id: &str, prompt: &str) -> anyhow::Result<String> {
-        // send_prompt is a rare user action, so fresh scans are acceptable.
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
-        );
-        let listeners = discovery::build_listener_map();
-        let endpoint = discovery::discover_endpoint(&sys, &listeners, pane_pid)
-            .ok_or_else(|| anyhow::anyhow!("Could not discover opencode endpoint"))?;
-
-        let url = format!("{}/session/{}/message", endpoint.base_url(), session_id);
-        let body = serde_json::json!({
-            "parts": [{"type": "text", "text": prompt}]
-        });
-
-        let response = self
-            .send_agent
-            .post(&url)
-            .send_json(&body)
-            .map_err(|e| anyhow::anyhow!("Failed to send message: {}", e))?;
-
-        if response.status().is_success() {
-            Ok("Message sent to opencode".to_string())
-        } else {
-            let status = response.status();
-            anyhow::bail!("opencode API error ({})", status)
+        match self.is_active(id) {
+            Some(true) => PaneStatus::Busy,
+            Some(false) => PaneStatus::Idle,
+            None => PaneStatus::Unknown,
         }
     }
 
+    fn send_prompt(
+        &self,
+        _pane_pid: u32,
+        session_id: &str,
+        prompt: &str,
+    ) -> anyhow::Result<String> {
+        let service = Service::discover()?;
+        let mut request = self
+            .send_agent
+            .post(format!("{}/api/session/{}/prompt", service.url, session_id));
+        if let Some(authorization) = &service.authorization {
+            request = request.header("Authorization", authorization);
+        }
+        request
+            .send_json(serde_json::json!({ "text": prompt }))
+            .context("Failed to send message")?;
+        Ok("Message sent to opencode".to_string())
+    }
+
+    /// Finds the pane's session by matching the TUI's terminal title against
+    /// session titles. A new session has no title until opencode generates
+    /// one, so it isn't found until then.
     fn enrich_pane(&self, pane: &mut AgentPane) {
-        crate::db::enrich_pane(pane, self.db_path.as_deref());
+        let Some(title) = PaneTitle::parse(&pane.pane_title) else {
+            return;
+        };
+        let Ok(service) = Service::discover() else {
+            return;
+        };
+        let Ok(sessions) = service.get::<Vec<Session>>(
+            &self.status_agent,
+            "/api/session",
+            &[("search", title.text()), ("order", "desc"), ("limit", "20")],
+        ) else {
+            return;
+        };
+        let pane_path = pane.canonical_path.as_deref().unwrap_or(&pane.pane_path);
+        let Some(session) = pick_session(sessions, &title, Path::new(pane_path)) else {
+            return;
+        };
+
+        pane.last_response = self.last_response(&service, &session);
+        pane.last_activity = timestamp(session.time.updated);
+        pane.model = session.model.map(|m| m.id);
+        pane.agent = session.agent;
+        pane.db_session_title = Some(session.title);
+        pane.db_session_id = Some(session.id);
     }
 
     fn fetch_session_detail(&self, session_id: &str) -> Option<SessionDetail> {
-        crate::db::fetch_session_detail(session_id, self.db_path.as_deref())
+        let service = Service::discover().ok()?;
+        let session: Session = service
+            .get(
+                &self.status_agent,
+                &format!("/api/session/{session_id}"),
+                &[],
+            )
+            .ok()?;
+        let messages: Vec<Message> = service
+            .get(
+                &self.status_agent,
+                &format!("/api/session/{session_id}/message"),
+                &[("order", "desc"), ("limit", "50")],
+            )
+            .unwrap_or_default();
+        let mut summaries: Vec<MessageSummary> =
+            messages.iter().filter_map(summarize).take(20).collect();
+        summaries.reverse();
+
+        let tokens = &session.tokens;
+        Some(SessionDetail {
+            input_tokens: tokens.input + tokens.cache.read + tokens.cache.write,
+            output_tokens: tokens.output,
+            session_created: timestamp(session.time.created),
+            session_updated: timestamp(session.time.updated),
+            messages: summaries,
+            session_id: session.id,
+            title: session.title,
+            directory: session.location.directory,
+            ..SessionDetail::default()
+        })
     }
 }
 
-// ─── Internal helpers ────────────────────────────────────────────────────────
-
-/// Query `/session/status`, scoped to the pane's directory.
-///
-/// The `directory` query param is required on a shared server: without it
-/// the server scopes the response to its own working directory's project
-/// and returns an empty map regardless of activity. Standalone instances
-/// resolve to the same scope either way.
-fn get_session_status(
-    agent: &ureq::Agent,
-    base_url: &str,
-    directory: &str,
-) -> Option<SessionStatusMap> {
-    let url = format!("{}/session/status", base_url);
-    let mut response = agent.get(&url).query("directory", directory).call().ok()?;
-    response.body_mut().read_json::<SessionStatusMap>().ok()
+/// The opencode background service, as registered in its service file.
+struct Service {
+    url: String,
+    authorization: Option<String>,
 }
 
-/// Determine the pane's status from the `/session/status` response.
-///
-/// The map only contains non-idle sessions within the pane's directory
-/// scope. When the pane's session id is known, only that entry counts —
-/// on a shared server, other panes' sessions can share the scope (e.g.
-/// non-git directories all map to the "global" project). Without a
-/// session id, a standalone instance can fall back to aggregating (its
-/// scope only holds the pane's own sessions), but on a shared server the
-/// aggregate could reflect a sibling pane, so report Unknown instead.
-fn status_for_pane(
-    map: &SessionStatusMap,
-    session_id: Option<&str>,
-    endpoint: &Endpoint,
-) -> PaneStatus {
-    match session_id {
-        Some(id) => map.get(id).map_or(PaneStatus::Idle, status_from_entry),
-        None => match endpoint {
-            Endpoint::Local(_) => status_from_map(map),
-            Endpoint::Attached(_) => PaneStatus::Unknown,
-        },
+impl Service {
+    /// Reads the service file on every call, since the service can be
+    /// replaced (eg: after an opencode upgrade) while pertmux runs.
+    fn discover() -> anyhow::Result<Self> {
+        #[derive(Deserialize)]
+        struct Registration {
+            url: String,
+            password: Option<String>,
+        }
+
+        let path = service_file().context("Could not find home directory")?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("Could not read {}", path.display()))?;
+        let registration: Registration = serde_json::from_str(&text)
+            .with_context(|| format!("Could not parse {}", path.display()))?;
+        let authorization = registration.password.map(|password| {
+            let credentials =
+                base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
+            format!("Basic {credentials}")
+        });
+        Ok(Self {
+            url: registration.url.trim_end_matches('/').to_string(),
+            authorization,
+        })
+    }
+
+    fn get<T: DeserializeOwned>(
+        &self,
+        agent: &ureq::Agent,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> anyhow::Result<T> {
+        #[derive(Deserialize)]
+        struct Data<T> {
+            data: T,
+        }
+
+        let mut request = agent.get(format!("{}{}", self.url, path));
+        if let Some(authorization) = &self.authorization {
+            request = request.header("Authorization", authorization);
+        }
+        for (key, value) in query {
+            request = request.query(*key, *value);
+        }
+        let body: Data<T> = request.call()?.body_mut().read_json()?;
+        Ok(body.data)
     }
 }
 
-fn status_from_entry(status: &SessionStatus) -> PaneStatus {
-    match status.status_type.as_str() {
-        "busy" => PaneStatus::Busy,
-        "retry" => PaneStatus::Retry {
-            attempt: status.attempt.unwrap_or(0),
-            message: status.message.clone().unwrap_or_default(),
-        },
-        _ => PaneStatus::Idle,
-    }
+/// opencode uses `$XDG_STATE_HOME`, falling back to `~/.local/state` on every
+/// platform.
+fn service_file() -> Option<PathBuf> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))?;
+    Some(state.join("opencode/service.json"))
 }
 
-/// Determine overall status from the opencode API response.
-/// Priority: Busy > Retry > Idle.
-fn status_from_map(map: &SessionStatusMap) -> PaneStatus {
-    if map.is_empty() {
-        return PaneStatus::Idle;
-    }
-    if map.values().any(|s| s.status_type == "busy") {
-        return PaneStatus::Busy;
-    }
-    if let Some(status) = map.values().find(|s| s.status_type == "retry") {
-        return PaneStatus::Retry {
-            attempt: status.attempt.unwrap_or(0),
-            message: status.message.clone().unwrap_or_default(),
+/// The session title shown in an opencode TUI's terminal title, eg:
+/// `OC | Fix the login bug`.
+#[derive(Debug, PartialEq)]
+enum PaneTitle<'a> {
+    Full(&'a str),
+    /// Titles over 40 characters are cut to 37 and end in an ellipsis.
+    Truncated(&'a str),
+}
+
+impl<'a> PaneTitle<'a> {
+    fn parse(pane_title: &'a str) -> Option<Self> {
+        let title = pane_title.strip_prefix("OC | ")?;
+        let parsed = match title
+            .strip_suffix('\u{2026}')
+            .or_else(|| title.strip_suffix("..."))
+        {
+            Some(prefix) => Self::Truncated(prefix),
+            None => Self::Full(title),
         };
+        (!parsed.text().is_empty()).then_some(parsed)
     }
-    PaneStatus::Idle
+
+    fn text(&self) -> &'a str {
+        match self {
+            Self::Full(text) | Self::Truncated(text) => text,
+        }
+    }
+
+    fn matches(&self, session_title: &str) -> bool {
+        match self {
+            Self::Full(title) => session_title == *title,
+            Self::Truncated(prefix) => session_title.starts_with(prefix),
+        }
+    }
+}
+
+/// The most recently updated top-level session matching `title`, preferring
+/// one started in `pane_path`. A session can live in a different directory
+/// from the TUI showing it (eg: one started in a worktree below the pane's
+/// directory), so sessions in a parent or child directory also count.
+/// `sessions` must be newest first.
+fn pick_session(sessions: Vec<Session>, title: &PaneTitle, pane_path: &Path) -> Option<Session> {
+    let mut related = None;
+    for session in sessions {
+        // `search` is a case-insensitive substring match, so recheck.
+        if session.parent_id.is_some()
+            || session.time.archived.is_some()
+            || !title.matches(&session.title)
+        {
+            continue;
+        }
+        let directory = Path::new(&session.location.directory);
+        if directory == pane_path {
+            return Some(session);
+        }
+        if related.is_none()
+            && (directory.starts_with(pane_path) || pane_path.starts_with(directory))
+        {
+            related = Some(session);
+        }
+    }
+    related
+}
+
+fn timestamp(millis: i64) -> Option<Timestamp> {
+    Timestamp::from_millisecond(millis).ok()
+}
+
+fn last_text(content: &[Content]) -> Option<&str> {
+    content.iter().rev().find_map(|c| match c {
+        Content::Text { text } if !text.trim().is_empty() => Some(text.trim()),
+        _ => None,
+    })
+}
+
+fn summarize(message: &Message) -> Option<MessageSummary> {
+    let preview = |text: &str| Some(text.chars().take(120).collect::<String>());
+    match message {
+        Message::User { text, time } => Some(MessageSummary {
+            role: "user".to_string(),
+            agent: None,
+            model: None,
+            output_tokens: 0,
+            timestamp: timestamp(time.created)?,
+            text_preview: Some(text.trim())
+                .filter(|t| !t.is_empty())
+                .and_then(preview),
+        }),
+        // Each tool-calling step is its own message. Skip the ones with no
+        // text.
+        Message::Assistant {
+            agent,
+            model,
+            tokens,
+            time,
+            content,
+        } => Some(MessageSummary {
+            role: "assistant".to_string(),
+            agent: agent.clone(),
+            model: model.as_ref().map(|m| m.id.clone()),
+            output_tokens: tokens.as_ref().map_or(0, |t| t.output),
+            timestamp: timestamp(time.created)?,
+            text_preview: preview(last_text(content)?),
+        }),
+        Message::Other => None,
+    }
+}
+
+// opencode API types. Only the fields pertmux reads are listed.
+
+#[derive(Deserialize)]
+struct Session {
+    id: String,
+    #[serde(rename = "parentID")]
+    parent_id: Option<String>,
+    agent: Option<String>,
+    model: Option<ModelRef>,
+    #[serde(default)]
+    tokens: Tokens,
+    time: SessionTime,
+    title: String,
+    location: Location,
+}
+
+#[derive(Deserialize)]
+struct ModelRef {
+    id: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Tokens {
+    input: u64,
+    output: u64,
+    cache: CacheTokens,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct CacheTokens {
+    read: u64,
+    write: u64,
+}
+
+/// Milliseconds since the Unix epoch.
+#[derive(Deserialize)]
+struct SessionTime {
+    created: i64,
+    updated: i64,
+    archived: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct Location {
+    directory: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Message {
+    User {
+        #[serde(default)]
+        text: String,
+        time: MessageTime,
+    },
+    Assistant {
+        agent: Option<String>,
+        model: Option<ModelRef>,
+        tokens: Option<Tokens>,
+        time: MessageTime,
+        #[serde(default)]
+        content: Vec<Content>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct MessageTime {
+    created: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Content {
+    Text {
+        text: String,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn map(entries: &[(&str, &str)]) -> SessionStatusMap {
-        entries
-            .iter()
-            .map(|(id, ty)| {
-                (
-                    id.to_string(),
-                    SessionStatus {
-                        status_type: ty.to_string(),
-                        attempt: Some(2),
-                        message: Some("rate limited".to_string()),
-                    },
-                )
-            })
-            .collect()
-    }
-
-    fn shared() -> Endpoint {
-        Endpoint::Attached("http://127.0.0.1:4599".to_string())
-    }
-
     #[test]
-    fn known_session_id_selects_only_that_entry() {
-        let m = map(&[("ses_a", "busy"), ("ses_b", "retry")]);
+    fn pane_title_strips_tui_decoration() {
         assert_eq!(
-            status_for_pane(&m, Some("ses_b"), &shared()),
-            PaneStatus::Retry {
-                attempt: 2,
-                message: "rate limited".to_string()
-            }
+            PaneTitle::parse("OC | Fix the login bug"),
+            Some(PaneTitle::Full("Fix the login bug"))
+        );
+        assert_eq!(
+            PaneTitle::parse("OC | Optimizing GET /v1/transactions/ \u{2026}"),
+            Some(PaneTitle::Truncated("Optimizing GET /v1/transactions/ "))
+        );
+        assert_eq!(
+            PaneTitle::parse("OC | Old style..."),
+            Some(PaneTitle::Truncated("Old style"))
         );
     }
 
     #[test]
-    fn session_absent_from_map_is_idle() {
-        let m = map(&[("ses_other", "busy")]);
+    fn pane_title_rejects_other_titles() {
+        assert_eq!(PaneTitle::parse("zsh"), None);
+        assert_eq!(PaneTitle::parse("OpenCode"), None);
+        assert_eq!(PaneTitle::parse("OC | "), None);
+        assert_eq!(PaneTitle::parse("OC | \u{2026}"), None);
+    }
+
+    fn session(id: &str, title: &str, directory: &str) -> Session {
+        Session {
+            id: id.to_string(),
+            parent_id: None,
+            agent: None,
+            model: None,
+            tokens: Tokens::default(),
+            time: SessionTime {
+                created: 0,
+                updated: 0,
+                archived: None,
+            },
+            title: title.to_string(),
+            location: Location {
+                directory: directory.to_string(),
+            },
+        }
+    }
+
+    fn pick(sessions: Vec<Session>, title: &str, pane_path: &str) -> Option<String> {
+        let title = PaneTitle::parse(title).unwrap();
+        pick_session(sessions, &title, Path::new(pane_path)).map(|s| s.id)
+    }
+
+    #[test]
+    fn pick_session_prefers_pane_directory() {
+        let sessions = vec![
+            session("worktree", "Fix bug", "/repo/.worktrees/fix"),
+            session("exact", "Fix bug", "/repo"),
+        ];
         assert_eq!(
-            status_for_pane(&m, Some("ses_mine"), &shared()),
-            PaneStatus::Idle
+            pick(sessions, "OC | Fix bug", "/repo").as_deref(),
+            Some("exact")
         );
     }
 
     #[test]
-    fn no_session_id_on_shared_server_is_unknown() {
-        // The scoped map can still contain sibling panes' sessions (shared
-        // directory scope), so aggregating would misreport.
-        let m = map(&[("ses_other", "busy")]);
-        assert_eq!(status_for_pane(&m, None, &shared()), PaneStatus::Unknown);
+    fn pick_session_falls_back_to_related_directory() {
+        let sessions = vec![
+            session("other", "Fix bug", "/elsewhere"),
+            session("worktree", "Fix bug", "/repo/.worktrees/fix"),
+        ];
+        assert_eq!(
+            pick(sessions, "OC | Fix bug", "/repo").as_deref(),
+            Some("worktree")
+        );
+        let sessions = vec![session("parent", "Fix bug", "/home")];
+        assert_eq!(
+            pick(sessions, "OC | Fix bug", "/home/repo").as_deref(),
+            Some("parent")
+        );
     }
 
     #[test]
-    fn no_session_id_on_local_instance_aggregates() {
-        let m = map(&[("ses_a", "busy")]);
+    fn pick_session_matches_full_titles_exactly() {
+        let sessions = vec![
+            session("longer", "Fix bug properly", "/repo"),
+            session("exact", "Fix bug", "/repo"),
+        ];
         assert_eq!(
-            status_for_pane(&m, None, &Endpoint::Local(4096)),
-            PaneStatus::Busy
+            pick(sessions, "OC | Fix bug", "/repo").as_deref(),
+            Some("exact")
         );
-        let empty = map(&[]);
+        let sessions = vec![session("longer", "Fix bug properly", "/repo")];
         assert_eq!(
-            status_for_pane(&empty, None, &Endpoint::Local(4096)),
-            PaneStatus::Idle
+            pick(sessions, "OC | Fix bug\u{2026}", "/repo").as_deref(),
+            Some("longer")
         );
+    }
+
+    #[test]
+    fn pick_session_skips_non_matching() {
+        let mut child = session("child", "Fix bug", "/repo");
+        child.parent_id = Some("ses_root".to_string());
+        let mut archived = session("archived", "Fix bug", "/repo");
+        archived.time.archived = Some(1);
+        let sessions = vec![
+            child,
+            archived,
+            session("case", "fix bug", "/repo"),
+            session("sibling", "Fix bug", "/repo2"),
+        ];
+        assert_eq!(pick(sessions, "OC | Fix bug", "/repo"), None);
+    }
+
+    #[test]
+    fn decodes_messages() {
+        let json = r#"[
+            {"type":"assistant","agent":"build","model":{"id":"opus","providerID":"p"},
+             "time":{"created":1791036602813},
+             "content":[{"type":"text","text":"first"},{"type":"tool","name":"read"},
+                        {"type":"text","text":" done "}]},
+            {"type":"assistant","agent":"build","model":{"id":"opus"},"tokens":null,
+             "time":{"created":1791036602000},
+             "content":[{"type":"reasoning","text":"hmm"},{"type":"tool","name":"read"}]},
+            {"type":"idle","outcome":"completed"},
+            {"type":"user","time":{"created":1791036601000},"text":"hello"}
+        ]"#;
+        let messages: Vec<Message> = serde_json::from_str(json).unwrap();
+        let summaries: Vec<MessageSummary> = messages.iter().filter_map(summarize).collect();
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].role, "assistant");
+        assert_eq!(summaries[0].text_preview.as_deref(), Some("done"));
+        assert_eq!(summaries[1].role, "user");
+        assert_eq!(summaries[1].text_preview.as_deref(), Some("hello"));
     }
 }

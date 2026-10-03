@@ -260,9 +260,9 @@ impl App {
             .map(|a| a.process_name().to_string())
             .collect();
 
-        // Run the expensive system-level I/O (sysinfo /proc scan, netstat
-        // socket table, tmux subprocess) on the blocking threadpool so the
-        // tokio main task stays responsive for client IPC.
+        // Run the expensive system-level I/O (sysinfo /proc scan, tmux
+        // subprocess) on the blocking threadpool so the tokio main task stays
+        // responsive for client IPC.
         let scan_result = {
             let names = process_names.clone();
             tokio::task::spawn_blocking(move || {
@@ -273,15 +273,13 @@ impl App {
                     true,
                     ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
                 );
-                let listeners = crate::discovery::build_listener_map();
-                let panes = tmux::list_agent_panes(&name_refs, &sys);
-                (sys, listeners, panes)
+                tmux::list_agent_panes(&name_refs, &sys)
             })
             .await
         };
 
-        let (sys, listeners, panes_result) = match scan_result {
-            Ok(tuple) => tuple,
+        let panes_result = match scan_result {
+            Ok(result) => result,
             Err(e) => {
                 warn!("app::refresh: spawn_blocking panicked: {}", e);
                 self.error = Some(format!("internal error: {}", e));
@@ -306,7 +304,7 @@ impl App {
         for pane in &mut panes {
             if let Some(agent) = self.find_agent(&pane.pane_command) {
                 agent.enrich_pane(pane);
-                pane.status = agent.query_status(pane, &sys, &listeners);
+                pane.status = agent.query_status(pane);
             }
         }
 

@@ -7,12 +7,9 @@ pub struct AgentConfig {
     pub claude_code: Option<ClaudeCodeAgentConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-#[derive(Default)]
-pub struct OpenCodeAgentConfig {
-    pub db_path: Option<String>,
-}
+pub struct OpenCodeAgentConfig {}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]

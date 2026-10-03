@@ -5,8 +5,6 @@ mod client;
 mod coding_agent;
 mod config;
 mod daemon;
-mod db;
-mod discovery;
 mod forge_clients;
 mod git;
 mod linking;

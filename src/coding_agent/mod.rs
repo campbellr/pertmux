@@ -1,9 +1,7 @@
 pub mod claude_code;
 pub mod opencode;
 
-use crate::discovery::ListenerMap;
 use crate::types::{AgentPane, PaneStatus, SessionDetail};
-use sysinfo::System;
 
 /// Trait for coding agent integrations.
 ///
@@ -22,13 +20,9 @@ pub trait CodingAgent {
 
     /// Query the live status of a coding session.
     ///
-    /// Accepts a pre-refreshed `&System` and `&ListenerMap` for agents that
-    /// need process-tree inspection or port discovery (e.g. opencode). Agents
-    /// that don't need them can ignore the parameters.
-    ///
     /// Called after `enrich_pane`, so agent-specific metadata (e.g.
     /// `pane.db_session_id`) is already populated.
-    fn query_status(&self, pane: &AgentPane, sys: &System, listeners: &ListenerMap) -> PaneStatus;
+    fn query_status(&self, pane: &AgentPane) -> PaneStatus;
 
     /// Send a prompt to the coding agent.
     ///
@@ -57,9 +51,7 @@ pub trait CodingAgent {
 pub fn agents_from_config(config: &crate::config::AgentConfig) -> Vec<Box<dyn CodingAgent>> {
     let mut agents: Vec<Box<dyn CodingAgent>> = Vec::new();
     if config.opencode.is_some() {
-        agents.push(Box::new(opencode::OpenCode::new(
-            config.opencode.as_ref().and_then(|c| c.db_path.clone()),
-        )));
+        agents.push(Box::new(opencode::OpenCode::new()));
     }
     if config.claude_code.is_some() {
         agents.push(Box::new(claude_code::ClaudeCode));

@@ -9,54 +9,27 @@ pertmux can monitor AI coding agent instances running in your tmux panes. Agents
 
 [opencode](https://github.com/sst/opencode) is a supported coding agent. The architecture is pluggable — see [Extending pertmux](/reference/extending/) and [Contributing](/reference/contributing/) if you'd like to add support for another agent.
 
-### Requirement: a reachable HTTP server
+### Requirement: opencode v2
 
-pertmux queries opencode's HTTP API for session status. Two setups work:
+pertmux talks to the opencode v2 background service that every opencode TUI on the machine connects to. It finds the service through its registration file, `$XDG_STATE_HOME/opencode/service.json` (default `~/.local/state/opencode/service.json`), which also holds the password pertmux uses to authenticate. No special flags are needed.
 
-**Standalone** — start opencode with `--port 0` so it launches its local HTTP server on a random port. pertmux discovers the port automatically:
-
-```bash
-opencode --port 0
-```
-
-Without `--port 0`, a standalone opencode doesn't start its HTTP server and pertmux won't be able to detect its status.
-
-**Shared server** — run the TUI as an attach client of a persistent server (`opencode serve` or `opencode web`). pertmux reads the server URL from the client's command line:
-
-```bash
-opencode serve --port 4096          # one persistent server
-opencode attach http://127.0.0.1:4096 --dir "$PWD"   # per-pane clients
-```
-
-Both setups can be mixed freely across panes.
-
-:::tip
-Add an alias to your shell profile so you don't have to remember the flag:
-```bash
-alias opencode='command opencode --port 0'
-```
-:::
+Panes are matched to sessions by the session title opencode puts in the terminal title (`OC | <title>`), so leave that enabled. A new session shows Unknown until opencode generates its title. Standalone servers (`opencode --standalone`) aren't registered and won't be detected.
 
 ### Config
 
 ```toml
 [agent.opencode]
-db_path = "~/.local/share/opencode/opencode.db"
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `db_path` | string | `~/.local/share/opencode/opencode.db` | Path to the opencode SQLite database |
+The section has no options.
 
 ### What it shows
 
 When an opencode agent is detected in a tmux pane, pertmux displays:
 
-- **Status**: Busy, Idle, Retry, or Unknown
+- **Status**: Busy, Idle, or Unknown
 - **Session title**: The active session name
 - **Token usage**: Input and output token counts
-- **Message count**: Total messages in the session
-- **Todo list**: The agent's current task progress
 - **Message timeline**: Recent conversation history
 
 ## Claude Code

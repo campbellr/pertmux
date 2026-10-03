@@ -22,7 +22,7 @@ All data stays on your machine:
 pertmux makes outbound HTTPS requests to exactly two destinations:
 
 1. **Your forge API** — `https://{gitlab-host}/api/v4/` or `https://{github-host}/api/v3/` (or `api.github.com`)
-2. **Local agent server** — `http://127.0.0.1:{port}/session/status` (localhost only)
+2. **opencode background service** — the URL in `~/.local/state/opencode/service.json` (localhost by default)
 
 There is no telemetry, no analytics, no phoning home. pertmux makes zero network requests beyond what you explicitly configure.
 
@@ -31,5 +31,4 @@ There is no telemetry, no analytics, no phoning home. pertmux makes zero network
 pertmux is fully open source. You can audit every network call in the codebase:
 
 - Forge API calls: `src/forge_clients/gitlab/client.rs` and `src/forge_clients/github/client.rs`
-- Agent API calls: `src/coding_agent/opencode.rs`
-- Endpoint discovery: `src/discovery.rs` (local process inspection only). For `opencode attach` clients, the server URL is taken from the client's own command line and may point at a non-local host; pertmux sends status queries and prompts to that URL.
+- Agent API calls: `src/coding_agent/opencode.rs`. The service URL and password are read from opencode's `service.json`, and pertmux sends status queries and prompts to that URL.

@@ -9,7 +9,7 @@ pertmux detects and monitors AI coding agent instances running in tmux panes acr
 
 pertmux supports two coding agents:
 
-- **[opencode](https://github.com/sst/opencode)** — must be started with `--port 0`, or as an `opencode attach` client of a shared server, so pertmux can query its HTTP API. Status is detected via HTTP API.
+- **[opencode](https://github.com/sst/opencode)** (v2) — requires no special flags. Status is read from the opencode background service's HTTP API.
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — requires no special flags. Status is detected by reading JSONL transcript files from `~/.claude/`.
 
 See [Agent Configuration](/configuration/agent-config/) for setup details.
@@ -23,7 +23,7 @@ Every 2 seconds (configurable via `refresh_interval`), the daemon:
 1. Lists all tmux panes across all sessions
 2. Checks each pane's running process against registered agent process names (`opencode`, `claude`)
 3. For matched panes, queries the agent for status using its own mechanism:
-   - **opencode**: Discovers the HTTP server port via process tree inspection and queries the API
+   - **opencode**: Matches the pane's terminal title to a session and queries the background service's API
    - **Claude Code**: Reads JSONL transcript files from `~/.claude/` and infers status from the last entry
 4. Enriches each pane with session details (title, model, tokens, messages)
 5. Links each agent pane to its corresponding MR via the worktree path

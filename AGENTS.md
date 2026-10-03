@@ -27,12 +27,10 @@ The project uses a **daemon/client architecture** with Unix socket IPC. A backgr
 - **protocol.rs**: IPC protocol. Defines `DashboardSnapshot`, `ProjectSnapshot`, `GlobalMrEntry` (cross-project MR entries), `ClientMsg` (commands from client to daemon), `DaemonMsg` (responses/snapshots from daemon to client), `PROTOCOL_VERSION` for handshake validation. Also defines `ActivityEntry` (feed items), `ActivityKind` (display colour), and `ActivityTarget` (navigation destination — `Pane { pane_id, pane_path }` for agent events, `MergeRequest { project_name, iid }` for forge events). The `target` field is `#[serde(default)]` for backwards compatibility.
 - **app.rs**: Owns the `App` struct, which holds data state (panes, projects, MRs, worktrees). Manages refresh cycle, linking, and `snapshot()` method to produce `DashboardSnapshot`. UI-related methods (selection, popup) have moved to `ClientState` in `client.rs`.
 - **coding_agent/mod.rs**: Defines the `CodingAgent` trait and `agents_from_config()` factory. The trait requires `name()`, `process_name()`, `query_status()`, and `send_prompt()`. Currently supports opencode and Claude Code. To add a new agent, implement the trait and register it here.
-- **coding_agent/opencode.rs**: opencode implementation of `CodingAgent`. Queries `{base_url}/session/status` for session state. Works with standalone instances (started with `--port 0` so they launch an HTTP server on a random port) and with `opencode attach <url>` clients of a shared server. Endpoint discovery happens automatically via process tree inspection in `discovery.rs`. Status is scoped to the pane's `db_session_id` when known; without one, standalone instances fall back to aggregate status and attached panes report Unknown.
+- **coding_agent/opencode.rs**: opencode (v2) implementation of `CodingAgent`. Talks to the per-user opencode background service, found through `$XDG_STATE_HOME/opencode/service.json` (URL + password, Basic auth as `opencode:<password>`), re-read on every call. `enrich_pane` matches the pane's terminal title (`OC | <title>`, cut to 37 chars + `…` past 40) against `GET /api/session?search=` results, preferring a session in the pane's directory, then a parent/child directory (eg: a worktree). Status: Busy if the session is in `GET /api/session/active`, else Idle; Unknown without a matched session. The service exposes no retries, message counts, todos or file summaries. Prompts go to `POST /api/session/{id}/prompt`.
 - **coding_agent/claude_code.rs**: Claude Code implementation of `CodingAgent`. Reads JSONL transcript files from `~/.claude/projects/` and `~/.claude/transcripts/` to determine session status (Busy/Idle) and extract session details (token usage, messages, model). No HTTP server or special flags required — Claude Code writes transcripts automatically.
 - **tmux.rs**: Wraps tmux CLI commands. Responsible for identifying coding agent panes (filtered by registered process names), switching focus between them, and `find_or_create_pane()` which searches all sessions for matching paths before creating new windows (prefers project-named sessions). When `default_agent_command` is configured, `find_or_create_pane()` creates a horizontal split: LEFT pane runs the agent command via `send-keys`, RIGHT pane is an empty terminal.
-- **discovery.rs**: Implements endpoint discovery (`Endpoint::Local(port)` / `Endpoint::Attached(url)`). It uses `sysinfo` to find child processes, parses the server URL from `opencode attach <url>` argv, and falls back to `netstat2` to map processes to active TCP listening ports.
 - **config.rs**: Defines `Config`, `AgentConfig`, `ProjectConfig`, `ProjectForge` enum, `KeybindingsConfig`, `GitLabSourceConfig`, `GitHubSourceConfig`, and per-agent config structs. Loads from TOML with `-c`/`--config` CLI flag or `~/.config/pertmux.toml`. Validates local_path existence, source configuration, token availability, project name uniqueness, and keybinding uniqueness at startup. `default_worktree_with_prompt` is an optional command template (uses `{{msg}}` placeholder) that powers the "create worktree with prompt" feature.
-- **db.rs**: Manages read-only access to the opencode SQLite database. Fetches session details and enriches pane information for opencode agents.
 - **types.rs**: Defines shared data structures like `AgentPane`, `SessionDetail`, and the `PaneStatus` enum.
 - **ui/mod.rs**: Entry point `draw_client(frame, &ClientState)`. Constants (`ACCENT`, `NOTIFICATION_DURATION`), `ProjectRenderData` adapter, layout orchestration.
 - **ui/helpers.rs**: Formatting (`truncate`, `shorten_path`, `format_tokens`), status badges, merge status display, scroll computation.
@@ -58,11 +56,9 @@ The project uses a **daemon/client architecture** with Unix socket IPC. A backgr
 - **Worktrunk CLI Integration**: Uses `wt list --format=json` (NOT the library crate — author warns API is unstable). `wt` supports `-C <path>` to target specific repos. Worktree actions (create/remove/merge) via popup dialogs.
 - **Optional Config**: Supports `-c`/`--config` for a TOML config file. Defaults to `~/.config/pertmux.toml`, falls back to built-in defaults if absent.
 - **Startup Validation**: Config `validate()` checks local_path existence, source configuration, token availability, and project name uniqueness. Fails fast with clear error messages.
-- **Read-Only DB Access**: Opens the SQLite database with `SQLITE_OPEN_READ_ONLY` to avoid locking issues or accidental corruption.
 - **Smart Pane Focus**: `find_or_create_pane()` first searches ALL panes across ALL tmux sessions by `pane_current_path` (canonicalized). If no match, prefers a session whose name matches the project name (case-insensitive). Falls back to other-client heuristic, then current session. When `default_agent_command` is set, new windows are created as a horizontal split with the agent in the left pane and an empty terminal on the right; focus lands on the left (agent) pane. Without the config, behavior is a single pane (backwards compatible).
 - **Create Worktree with Prompt**: When `default_worktree_with_prompt` is configured, pressing `'w'` (configurable via `open_worktree_with_prompt`) opens a two-field modal: branch name and message. The message is substituted into the `{{msg}}` placeholder of the template to produce the command passed to `find_or_create_pane()` as the agent command. The daemon creates the worktree via worktrunk; the client then opens the tmux pane with the filled command on the next snapshot update (`pending_open_worktree` in `ClientState`).
 - **Responsive Layout**: The UI adapts to landscape and portrait terminal dimensions.
-- **Process Tree Walking**: Endpoint discovery relies on finding the specific child process of the tmux pane that owns the API socket (or, for attach clients, carries the server URL in its argv).
 - **MR-first layout**: When a forge (`[gitlab]` or `[github]`) is configured, the primary list entity is open MRs/PRs. Worktrees appear in a dedicated bottom section with navigation and actions.
 - **Tiered refresh**: Daemon runs configurable timers — tmux/agent (`refresh_interval` default 2s), MR detail (`mr_detail_interval` default 60s), worktrees (`worktree_interval` default 30s), MR list (`mr_list_interval` default 300s). MR list also refreshed on manual 'r' or daemon startup.
 - **Backwards compatibility**: No forge config (`[gitlab]`/`[github]`) = v1 behavior unchanged (agent-only mode).
@@ -76,11 +72,11 @@ The project uses a **daemon/client architecture** with Unix socket IPC. A backgr
 - **ratatui**: TUI framework for rendering.
 - **crossterm**: Terminal abstraction for raw mode and event handling.
 - **ureq**: Minimal, synchronous HTTP client for agent API calls.
-- **rusqlite**: SQLite bindings (using the `bundled` feature).
+- **rusqlite**: SQLite bindings for the read-state DB (using the `bundled` feature).
 - **serde / serde_json**: Serialization for API responses, worktrunk JSON, and daemon/client IPC.
 - **sysinfo**: Process management and tree traversal.
-- **netstat2**: Socket-to-process mapping.
-- **dirs**: Cross-platform path resolution for the database location.
+- **base64**: Basic auth header for the opencode service.
+- **dirs**: Cross-platform home and data directory resolution.
 - **clap**: CLI argument parsing (subcommands: serve, connect, stop, status, cleanup).
 - **toml**: Configuration file parsing.
 - **anyhow**: Error handling.
@@ -172,8 +168,8 @@ Both workflows use `concurrency` groups to cancel in-progress runs when new comm
 ## Important Paths & Endpoints
 - **Daemon socket**: `/tmp/pertmux-{USER}.sock`
 - **Daemon log**: `/tmp/pertmux-daemon.log`
-- **opencode Database**: `~/.local/share/opencode/opencode.db`
-- **opencode API Endpoint**: `{base_url}/session/status` (base URL from endpoint discovery: local port or attach URL)
+- **opencode service registration**: `$XDG_STATE_HOME/opencode/service.json` (default `~/.local/state/opencode/service.json`)
+- **opencode API**: `{url}/api/session`, `/api/session/active`, `/api/session/{id}`, `/api/session/{id}/message`, `/api/session/{id}/prompt`
 - **Claude Code Transcripts**: `~/.claude/projects/` and `~/.claude/transcripts/`
 - **GitLab API**: `https://{host}/api/v4/projects/{project}/merge_requests`
 - **GitHub API**: `https://api.github.com/repos/{owner}/{repo}/pulls` (or `https://{host}/api/v3/` for GHE)

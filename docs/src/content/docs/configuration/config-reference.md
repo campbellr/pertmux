@@ -47,11 +47,7 @@ pertmux -c ./path/to/config.toml serve
 
 ## `[agent.opencode]`
 
-Including this section enables the opencode agent. Omit or comment it out to disable.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `db_path` | string | `~/.local/share/opencode/opencode.db` | Path to the opencode SQLite database |
+Including this section enables the opencode agent. Omit or comment it out to disable. It has no options.
 
 ## `[keybindings]`
 

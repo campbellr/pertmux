@@ -381,22 +381,31 @@ fn draw_detail_header(frame: &mut Frame, detail: &SessionDetail, area: Rect) {
         Span::styled(" out", Style::default().fg(Color::DarkGray)),
     ]));
 
-    lines.push(Line::from(vec![
-        Span::styled("  msg  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            detail.message_count.to_string(),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(" messages", Style::default().fg(Color::DarkGray)),
-        if let Some(dur) = session_duration(detail) {
+    // Agents that don't count messages report 0.
+    let duration = session_duration(detail);
+    if detail.message_count > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("  msg  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("  \u{00b7}  {}", dur),
-                Style::default().fg(Color::DarkGray),
-            )
-        } else {
-            Span::raw("")
-        },
-    ]));
+                detail.message_count.to_string(),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(" messages", Style::default().fg(Color::DarkGray)),
+            if let Some(dur) = &duration {
+                Span::styled(
+                    format!("  \u{00b7}  {}", dur),
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else {
+                Span::raw("")
+            },
+        ]));
+    } else if let Some(dur) = duration {
+        lines.push(Line::from(vec![
+            Span::styled("  dur  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(dur, Style::default().fg(Color::White)),
+        ]));
+    }
 
     if detail.summary_files.unwrap_or(0) > 0 {
         lines.push(Line::from(vec![
